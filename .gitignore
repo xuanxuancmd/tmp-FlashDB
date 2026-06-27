@@ -1,0 +1,14 @@
+connect-rust/target
+connect-rust/.idea
+.opencode/node_modules
+*.log
+.sisyphus
+.sisyphus/boulder.json
+**/__pycache__/
+target
+worktrees
+.playwright-mcp
+evidence
+node_modules
+.omo
+.planning
