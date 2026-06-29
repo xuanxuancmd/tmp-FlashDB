@@ -12,3 +12,4 @@ evidence
 node_modules
 .omo
 .planning
+.codegraph
