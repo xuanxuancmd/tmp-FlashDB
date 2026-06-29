@@ -2,7 +2,7 @@
 
 当前项目完成开元FlashDB从 C 到 Rust 的 1:1 翻译，确保规格不遗漏，同时遵从rust语言特点。
 
-FlashDB 源码参考：`C:\wanglong\temp\FlashDB`。
+FlashDB 源码参考：`D:\MyCode\temp\FlashDB`。
 
 ## Harness 工程目录
 
