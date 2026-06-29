@@ -30,7 +30,7 @@ description: >-
 
 | Role | Responsibility |
 |------|----------------|
-| **This skill (reverse-analysis-test-spec)** | Reverse code → BL docs → BL validation → acceptance spec → .feature scenarios |
+| **This skill (reverse-engineering-test-spec)** | Reverse code → BL docs → BL validation → acceptance spec → .feature scenarios |
 | **harness-bdd-design** | Gherkin rules authority (BRIEF, observable outcomes, step counts, anti-patterns) — referenced by this skill in Phase 5 |
 | harness-bdd-coding / human | Write Step Definitions and automation code from .feature files |
 
@@ -112,7 +112,8 @@ Feature: 文件解析与加载
 |-----------|:--------:|-------------|
 | `source_dir` | ✅ | Source code directory path |
 | `source_lang` | ✅ | Source language identifier (`c` / `java` / `rust` / `python`, etc.) |
-| `harness_dir` | ❌ | harness root directory path, default `.opencode/harness/`. Spec output to `{harness_dir}/spec/`, feature output to `{harness_dir}/feature/` |
+| `harness_dir` | ❌ | harness root directory path, default `.opencode/harness/`. Spec output to `{harness_dir}/specs/`, feature output to `{harness_dir}/features/`. **Only `specs/` and `features/` subdirectories are written under this directory.** |
+| `output_dir` | ❌ | Output directory for Phase 1-3 intermediate artifacts (feature-inventory.md, bl/, validation-report.md, gaps.md). MUST NOT be under `harness_dir`. Default: `{source_dir}/.reverse-engineering-output/` or a temp directory. |
 | `scope` | ❌ | Limit extraction scope: single module / single file / full |
 | `feature_hint` | ❌ | User-specified Feature name (e.g., "order creation"); skips Phase 1 auto-discovery |
 
@@ -122,14 +123,14 @@ Feature: 文件解析与加载
 
 ```
 {harness_dir}/                         # default .opencode/harness/
-├── spec/                              # Phase 4: acceptance spec (markdown, human-readable)
+├── specs/                             # Phase 4: acceptance spec (markdown, human-readable)
 │   ├── {feature-1}-spec.md
 │   └── {feature-2}-spec.md
-└── feature/                           # Phase 5: .feature scenarios (references harness-bdd-design)
+└── features/                          # Phase 5: .feature scenarios (references harness-bdd-design)
     ├── {feature-1}.feature
     └── {feature-2}.feature
 
-{temp working dir}/                    # Phase 1-3 intermediate artifacts (keep or clean up as needed)
+{output_dir}/                          # Phase 1-3 intermediate artifacts (NOT under harness_dir)
 ├── feature-inventory.md               # Phase 1: Feature inventory + priorities
 ├── bl/                                # Phase 2-3: business logic documents
 │   ├── {feature-1}.md
@@ -137,6 +138,8 @@ Feature: 文件解析与加载
 ├── validation-report.md               # Phase 3: BL validation report
 └── gaps.md                            # Phase 3: gap records
 ```
+
+> **IMPORTANT**: Only `specs/` and `features/` are written under `{harness_dir}/`. All Phase 1-3 intermediate artifacts (feature-inventory.md, bl/, validation-report.md, gaps.md) are written to `{output_dir}/` which MUST NOT be under `{harness_dir}/`.
 
 ---
 
@@ -170,7 +173,7 @@ Feature: Document serialization
   └─ I/O: writes to disk
 ```
 
-**Output**: `feature-inventory.md`
+**Output**: `{output_dir}/feature-inventory.md`
 
 ```markdown
 # Feature Inventory
@@ -229,7 +232,7 @@ Feature: Document serialization
 | 10 | Ambiguities | What cannot be inferred from code |
 | 11 | Code References | file:line evidence index |
 
-**Output**: `bl/{feature-name}.md`
+**Output**: `{output_dir}/bl/{feature-name}.md`
 
 **Quality self-check**:
 - ✅ All sections have content (when N/A, explicitly state "N/A — reason")
@@ -303,9 +306,9 @@ Rewrite vague rules into deterministic rules:
 - Extract complex conditional logic into Decision Tables
 
 **Output**:
-- `validation-report.md` — validation matrix + coverage statistics
-- `gaps.md` — gap list + severity grading + fix suggestions
-- `bl/{feature-name}.md` updated to the refined version
+- `{output_dir}/validation-report.md` — validation matrix + coverage statistics
+- `{output_dir}/gaps.md` — gap list + severity grading + fix suggestions
+- `{output_dir}/bl/{feature-name}.md` updated to the refined version
 
 ---
 
@@ -385,7 +388,7 @@ Rewrite vague rules into deterministic rules:
 
 #### Output
 
-`{harness_dir}/spec/{feature-name}-spec.md`
+`{harness_dir}/specs/{feature-name}-spec.md`
 
 **Spec document structure** (detailed template in [references/acceptance-spec-template.md](references/acceptance-spec-template.md)):
 
@@ -446,7 +449,7 @@ Fallback submission message:
 ### Output inventory
 | Feature | Spec | .feature | Note |
 |---------|------|----------|------|
-| {name} | spec/{name}-spec.md | — | harness-bdd-design not found, skipping .feature generation |
+| {name} | specs/{name}-spec.md | — | harness-bdd-design not found, skipping .feature generation |
 
 ### Statistics
 - Feature count: N
@@ -522,7 +525,7 @@ Please review the Spec output. To generate .feature files, ensure the harness-bd
 
 #### Output
 
-`{harness_dir}/feature/{feature-name}.feature`
+`{harness_dir}/features/{feature-name}.feature`
 
 ---
 
@@ -532,8 +535,8 @@ After Phase 5 completes (or after Phase 4 in fallback mode), submit the output t
 
 #### Normal mode (harness-bdd-design available)
 
-1. **`{harness_dir}/spec/{feature-name}-spec.md`** — Acceptance spec (human-readable, for business/PM review)
-2. **`{harness_dir}/feature/{feature-name}.feature`** — .feature acceptance scenarios (executable, for dev/QA)
+1. **`{harness_dir}/specs/{feature-name}-spec.md`** — Acceptance spec (human-readable, for business/PM review)
+2. **`{harness_dir}/features/{feature-name}.feature`** — .feature acceptance scenarios (executable, for dev/QA)
 
 **Submission format**:
 
@@ -543,7 +546,7 @@ After Phase 5 completes (or after Phase 4 in fallback mode), submit the output t
 ### Output inventory
 | Feature | Spec | .feature | Scenario count |
 |---------|------|----------|----------------|
-| {name} | spec/{name}-spec.md | feature/{name}.feature | N |
+| {name} | specs/{name}-spec.md | features/{name}.feature | N |
 
 ### Statistics
 - Feature count: N
@@ -604,10 +607,10 @@ Please review the above output. Once confirmed, the .feature files can be handed
 ## Quick Reference: Execution Steps
 
 ```
-1. Phase 1: Feature Discovery → feature-inventory.md (Feature inventory + priorities)
-2. Phase 2: BL Extraction → bl/{feature}.md (11-section business logic document)
-3. Phase 3: BL Validation + Refinement → validation-report.md + gaps.md + updated bl/
-4. Phase 4: Acceptance Spec Generation → {harness_dir}/spec/{feature}-spec.md
-5. Phase 5: .feature File Generation (load harness-bdd-design) → {harness_dir}/feature/{feature}.feature
+1. Phase 1: Feature Discovery → {output_dir}/feature-inventory.md (Feature inventory + priorities)
+2. Phase 2: BL Extraction → {output_dir}/bl/{feature}.md (11-section business logic document)
+3. Phase 3: BL Validation + Refinement → {output_dir}/validation-report.md + {output_dir}/gaps.md + updated {output_dir}/bl/
+4. Phase 4: Acceptance Spec Generation → {harness_dir}/specs/{feature}-spec.md
+5. Phase 5: .feature File Generation (load harness-bdd-design) → {harness_dir}/features/{feature}.feature
 6. Submit to user for review: output inventory + statistics summary
 ```
