@@ -2,9 +2,15 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(clippy::missing_safety_doc)]
 
+// KVDB public APIs (fdb_kv_get -> Option<String>, fdb_kv_print -> String) need
+// dynamic allocation. `extern crate alloc` works in both std (tests) and no_std
+// (final binary supplies a global allocator).
+extern crate alloc;
+
 pub mod def;
 pub mod flash_trait;
 pub mod init;
+pub mod kvdb;
 pub mod low_lvl;
 
 #[cfg(test)]

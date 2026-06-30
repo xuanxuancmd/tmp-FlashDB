@@ -28,3 +28,7 @@ gran_256 = []
 [dev-dependencies]
 cucumber = "0.21"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[[test]]
+name = "kvdb_equiv"
+path = "tests/c-port/kvdb_equiv.rs"
