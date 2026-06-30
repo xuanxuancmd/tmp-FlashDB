@@ -564,8 +564,12 @@ mod tests {
 
     // Padding only occurs when the write granularity exceeds one byte
     // (GRAN >= 32). Under the default GRAN==1 this path is unreachable, so the
-    // padding behaviour is verified here only when gran_64 is enabled.
-    #[cfg(feature = "gran_64")]
+    // padding behaviour is verified here only when gran_64 is the *active*
+    // granularity (i.e. no higher gran_* feature is enabled).
+    #[cfg(all(
+        feature = "gran_64",
+        not(any(feature = "gran_128", feature = "gran_256"))
+    ))]
     #[test]
     fn test_flash_write_align_padding_gran64() {
         let mut flash = make_flash();

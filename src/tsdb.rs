@@ -16,9 +16,11 @@ use crate::def::{
 use crate::flash_trait::FlashDevice;
 use crate::init::{init_ex, init_finish, deinit as db_deinit};
 use crate::low_lvl::{
-    align_down, align_up, flash_erase, flash_read, flash_write, flash_write_align, get_status,
+    align_up, flash_erase, flash_read, flash_write, flash_write_align, get_status,
     status_table_size, wg_align, write_status,
 };
+#[cfg(feature = "fixed_blob_size")]
+use crate::low_lvl::align_down;
 
 // ==========================================================================
 // Constants (c: fdb_tsdb.c:28-99)

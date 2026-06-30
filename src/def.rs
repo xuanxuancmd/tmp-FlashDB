@@ -28,6 +28,43 @@ pub const FDB_FILE_CACHE_TABLE_SIZE: usize = 2;
 // ===== Write granularity (c: fdb_def.h:55-57, fdb_cfg_template.h:38) =====
 /// c: fdb_cfg_template.h:38 — Flash write granularity in bits.
 /// 1=NOR flash, 8=STM32F2/F4, 32=STM32F1, 64=STM32F7, 128=STM32H5, 256=STM32H7.
+//
+// The `gran_*` Cargo features mirror the C `#if (FDB_WRITE_GRAN == N)` macro and
+// are mutually exclusive in normal use (only one should be enabled at a time).
+// Cargo's additive feature model cannot express mutual exclusion, so when
+// multiple `gran_*` features are enabled simultaneously (e.g. via
+// `cargo build --all-features`) the largest granularity wins. This is a harmless
+// fallback that keeps `--all-features` compilable without changing on-flash
+// layout for any single-feature configuration.
+#[cfg(feature = "gran_256")]
+pub const FDB_WRITE_GRAN: u32 = 256;
+
+#[cfg(all(feature = "gran_128", not(feature = "gran_256")))]
+pub const FDB_WRITE_GRAN: u32 = 128;
+
+#[cfg(all(
+    feature = "gran_64",
+    not(any(feature = "gran_128", feature = "gran_256"))
+))]
+pub const FDB_WRITE_GRAN: u32 = 64;
+
+#[cfg(all(
+    feature = "gran_32",
+    not(any(feature = "gran_64", feature = "gran_128", feature = "gran_256"))
+))]
+pub const FDB_WRITE_GRAN: u32 = 32;
+
+#[cfg(all(
+    feature = "gran_8",
+    not(any(
+        feature = "gran_32",
+        feature = "gran_64",
+        feature = "gran_128",
+        feature = "gran_256"
+    ))
+))]
+pub const FDB_WRITE_GRAN: u32 = 8;
+
 #[cfg(not(any(
     feature = "gran_8",
     feature = "gran_32",
@@ -36,21 +73,6 @@ pub const FDB_FILE_CACHE_TABLE_SIZE: usize = 2;
     feature = "gran_256"
 )))]
 pub const FDB_WRITE_GRAN: u32 = 1;
-
-#[cfg(feature = "gran_8")]
-pub const FDB_WRITE_GRAN: u32 = 8;
-
-#[cfg(feature = "gran_32")]
-pub const FDB_WRITE_GRAN: u32 = 32;
-
-#[cfg(feature = "gran_64")]
-pub const FDB_WRITE_GRAN: u32 = 64;
-
-#[cfg(feature = "gran_128")]
-pub const FDB_WRITE_GRAN: u32 = 128;
-
-#[cfg(feature = "gran_256")]
-pub const FDB_WRITE_GRAN: u32 = 256;
 
 // ===== Byte constants (c: fdb_low_lvl.h:25-27) =====
 /// c: fdb_low_lvl.h:25 — erased flash byte
@@ -321,7 +343,7 @@ pub const FDB_SECTOR_DIRTY_STATUS_NUM: u8 = 4;
 
 // ===== KVDB sector info (c: fdb_def.h:225-237) =====
 /// c: fdb_def.h:225-236 — kvdb_sec_info (runtime)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct KvdbSecInfo {
     pub check_ok: bool,
     pub store: FdbSectorStoreStatus,

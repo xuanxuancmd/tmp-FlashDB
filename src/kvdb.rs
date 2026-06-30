@@ -17,16 +17,16 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::def::{
-    FdbBlob, FdbDb, FdbDbType, FdbDefaultKv, FdbDefaultKvNode, FdbErr, FdbKv, FdbKvIterator,
+    FdbBlob, FdbDb, FdbDbType, FdbDefaultKv, FdbErr, FdbKv, FdbKvIterator,
     FdbKvStatus, FdbKvdb, FdbSectorDirtyStatus, FdbSectorStoreStatus, KvdbSecInfo, FDB_BYTE_ERASED,
     FDB_DATA_UNUSED, FDB_DIRTY_STATUS_TABLE_SIZE, FDB_FAILED_ADDR, FDB_KV_NAME_MAX,
     FDB_KV_STATUS_NUM, FDB_SECTOR_DIRTY_STATUS_NUM, FDB_SECTOR_STORE_STATUS_NUM,
     FDB_STORE_STATUS_TABLE_SIZE,
 };
 use crate::flash_trait::FlashDevice;
-use crate::init::{db_path, deinit, init_ex, init_finish};
+use crate::init::{deinit, init_ex, init_finish};
 use crate::low_lvl::{
-    align_down, blob_make, blob_read, calc_crc32, continue_ff_addr, flash_erase, flash_read,
+    align_down, blob_make, calc_crc32, continue_ff_addr, flash_erase, flash_read,
     flash_write, flash_write_align, get_status, read_status, set_status, status_table_size,
     wg_align, write_status,
 };
@@ -86,7 +86,10 @@ pub struct SectorHdrData {
     /// c: fdb_kvdb.c:109 — reserved
     pub reserved: u32,
     /// c: fdb_kvdb.c:110-114 — align padding for 64bit and 128bit write granularity
-    #[cfg(any(feature = "gran_64", feature = "gran_128"))]
+    #[cfg(all(
+        any(feature = "gran_64", feature = "gran_128"),
+        not(feature = "gran_256")
+    ))]
     pub padding: [u8; 4],
     /// c: fdb_kvdb.c:112-113 — align padding for 256bit write granularity
     #[cfg(feature = "gran_256")]
@@ -119,7 +122,10 @@ impl Default for SectorHdrData {
             magic: 0,
             combined: 0,
             reserved: 0,
-            #[cfg(any(feature = "gran_64", feature = "gran_128"))]
+            #[cfg(all(
+                any(feature = "gran_64", feature = "gran_128"),
+                not(feature = "gran_256")
+            ))]
             padding: [0; 4],
             #[cfg(feature = "gran_256")]
             padding: [0; 20],
@@ -144,10 +150,13 @@ pub struct KvHdrData {
     /// c: fdb_kvdb.c:124 — value length
     pub value_len: u32,
     /// c: fdb_kvdb.c:125-126 — align padding for 64bit write granularity
-    #[cfg(feature = "gran_64")]
+    #[cfg(all(
+        feature = "gran_64",
+        not(any(feature = "gran_128", feature = "gran_256"))
+    ))]
     pub padding: [u8; 4],
     /// c: fdb_kvdb.c:127-128 — align padding for 128bit write granularity
-    #[cfg(feature = "gran_128")]
+    #[cfg(all(feature = "gran_128", not(feature = "gran_256")))]
     pub padding: [u8; 12],
     /// c: fdb_kvdb.c:129-130 — align padding for 256bit write granularity
     #[cfg(feature = "gran_256")]
@@ -163,9 +172,12 @@ impl Default for KvHdrData {
             crc32: 0,
             name_len: 0,
             value_len: 0,
-            #[cfg(feature = "gran_64")]
+            #[cfg(all(
+                feature = "gran_64",
+                not(any(feature = "gran_128", feature = "gran_256"))
+            ))]
             padding: [0; 4],
-            #[cfg(feature = "gran_128")]
+            #[cfg(all(feature = "gran_128", not(feature = "gran_256")))]
             padding: [0; 12],
             #[cfg(feature = "gran_256")]
             padding: [0; 15],
@@ -193,6 +205,11 @@ pub const KV_NAME_LEN_OFFSET: usize = core::mem::offset_of!(KvHdrData, name_len)
 // ===== Compile-time layout assertions (match C sizeof for every GRAN) =====
 // Each GRAN configuration produces a different struct size (conditional padding);
 // verify all of them against the values computed from the C source.
+//
+// The cfg guards mirror the priority-nested `FDB_WRITE_GRAN` selection in
+// `def.rs`: when multiple `gran_*` features are enabled simultaneously (e.g.
+// `--all-features`) the largest granularity wins, so each assertion fires only
+// when its corresponding granularity is the *active* one.
 
 #[cfg(not(any(
     feature = "gran_8",
@@ -211,24 +228,52 @@ const _: () = assert!(core::mem::size_of::<SectorHdrData>() == 16); // GRAN==1
 )))]
 const _: () = assert!(core::mem::size_of::<KvHdrData>() == 24); // GRAN==1
 
-#[cfg(feature = "gran_8")]
+#[cfg(all(
+    feature = "gran_8",
+    not(any(
+        feature = "gran_32",
+        feature = "gran_64",
+        feature = "gran_128",
+        feature = "gran_256"
+    ))
+))]
 const _: () = assert!(core::mem::size_of::<SectorHdrData>() == 20);
-#[cfg(feature = "gran_8")]
+#[cfg(all(
+    feature = "gran_8",
+    not(any(
+        feature = "gran_32",
+        feature = "gran_64",
+        feature = "gran_128",
+        feature = "gran_256"
+    ))
+))]
 const _: () = assert!(core::mem::size_of::<KvHdrData>() == 28);
 
-#[cfg(feature = "gran_32")]
+#[cfg(all(
+    feature = "gran_32",
+    not(any(feature = "gran_64", feature = "gran_128", feature = "gran_256"))
+))]
 const _: () = assert!(core::mem::size_of::<SectorHdrData>() == 36);
-#[cfg(feature = "gran_32")]
+#[cfg(all(
+    feature = "gran_32",
+    not(any(feature = "gran_64", feature = "gran_128", feature = "gran_256"))
+))]
 const _: () = assert!(core::mem::size_of::<KvHdrData>() == 40);
 
-#[cfg(feature = "gran_64")]
+#[cfg(all(
+    feature = "gran_64",
+    not(any(feature = "gran_128", feature = "gran_256"))
+))]
 const _: () = assert!(core::mem::size_of::<SectorHdrData>() == 64);
-#[cfg(feature = "gran_64")]
+#[cfg(all(
+    feature = "gran_64",
+    not(any(feature = "gran_128", feature = "gran_256"))
+))]
 const _: () = assert!(core::mem::size_of::<KvHdrData>() == 64);
 
-#[cfg(feature = "gran_128")]
+#[cfg(all(feature = "gran_128", not(feature = "gran_256")))]
 const _: () = assert!(core::mem::size_of::<SectorHdrData>() == 112);
-#[cfg(feature = "gran_128")]
+#[cfg(all(feature = "gran_128", not(feature = "gran_256")))]
 const _: () = assert!(core::mem::size_of::<KvHdrData>() == 112);
 
 #[cfg(feature = "gran_256")]
@@ -995,7 +1040,7 @@ impl FdbKvdb {
         flash: &mut F,
         key: &[u8],
         value_buf: &mut [u8],
-        mut value_len_out: Option<&mut usize>,
+        value_len_out: Option<&mut usize>,
     ) -> usize {
         let mut kv = FdbKv::default();
         let mut read_len = 0usize;
@@ -1308,6 +1353,9 @@ impl FdbKvdb {
     ///
     /// Delete a KV. `old_kv` is used directly when provided; otherwise the KV is
     /// found by `key`. `complete_del=false` → PRE_DELETE; `true` → DELETED.
+    ///
+    /// `name` / `name_len` are only consumed by the `kv_cache` branch below.
+    #[cfg_attr(not(feature = "kv_cache"), allow(unused_variables))]
     pub(crate) fn del_kv<F: FlashDevice>(
         &mut self,
         flash: &mut F,
@@ -2473,7 +2521,9 @@ impl FdbKvdb {
         let mut traversed_len = 0u32;
         let mut sector = KvdbSecInfo::default();
         let mut kv = FdbKv::default();
-        let mut result = Ok(());
+        // `result` is assigned at the top of every loop iteration before any
+        // `break`, so it is always initialized when read below.
+        let mut result: Result<(), FdbErr>;
         loop {
             traversed_len += self.db_sec_size();
             result = self.read_sector_info(flash, sec_addr, &mut sector, false);
@@ -2512,6 +2562,8 @@ impl FdbKvdb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::def::FdbDefaultKvNode;
+    use crate::low_lvl::blob_read;
     // ---- on-flash struct sizes (GRAN==1, the default configuration) ----
 
     #[test]
@@ -3406,8 +3458,7 @@ mod tests {
         db.set_sec_size(4096);
         assert_eq!(db.get_sec_size(), 4096);
         db.parent.max_size = 16384;
-        let lock_called = std::sync::atomic::AtomicBool::new(false);
-        // set_lock installs a callback
+        // set_lock installs a callback (fn pointer, no captured state)
         db.set_lock(|_db| {}); // no-op lock
         db.set_unlock(|_db| {});
         db.set_not_format(true);
