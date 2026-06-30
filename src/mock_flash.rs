@@ -4,8 +4,13 @@
 // Initial state: all 0xFF (erased).
 // Write: can only 1→0 (NOR flash semantics).
 // Erase: resets region to 0xFF.
+//
+// NOTE: This module is compiled unconditionally (not just under `cfg(test)`)
+// so that integration tests in `tests/` can also use `MockFlash`.  It only
+// depends on `alloc` (Vec), not `std`, so `no_std` compatibility is preserved.
 
-#![cfg(test)]
+use alloc::vec::Vec;
+use alloc::vec;
 
 use crate::def::{FdbErr, FDB_BYTE_ERASED};
 use crate::flash_trait::FlashDevice;

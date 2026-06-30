@@ -37,3 +37,8 @@ path = "tests/c-port/kvdb_equiv.rs"
 [[test]]
 name = "tsdb_equiv"
 path = "tests/c-port/tsdb_equiv.rs"
+
+[[test]]
+name = "bdd"
+path = "tests/bdd.rs"
+harness = false  # cucumber provides its own harness
