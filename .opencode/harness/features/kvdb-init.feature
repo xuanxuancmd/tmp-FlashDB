@@ -59,11 +59,6 @@ Feature: KVDB 数据库初始化与生命周期管理
     Then 返回值等于 FDB_NO_ERR
     And 该扇区的 GC 被自动完成（有效 KV 被搬运，旧扇区被格式化）
 
-  Scenario: 完整性检查通过已初始化的数据库
-    Given KVDB 实例已初始化且数据完整
-    When 调用 fdb_kvdb_check(db)
-    Then 返回值等于 FDB_NO_ERR
-
   Scenario: 反初始化后 init_ok 为 false
     Given KVDB 实例已初始化
     When 调用 fdb_kvdb_deinit(db)

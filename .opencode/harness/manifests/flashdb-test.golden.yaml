@@ -1,0 +1,55 @@
+metadata:
+  module: flashdb
+  manifest_type: test
+  generated_at: '2026-06-30T22:18:40.502858'
+  c_root: C:/wanglong/temp/FlashDB
+  rust_root: tests
+  generator: build_golden_manifest.py
+  note: FlashDB C→Rust 测试迁移黄金清单。每个 test_* 必须迁移为 Rust integration test（或降级为 UT 并注明理由）。每个
+    *_cb 回调随对应 test_* 一起迁移。TEST_* 常量必须 1:1 迁移。迁移方式：direct=直接迁移 / degraded=降级为UT /
+    merged=合并 / dropped=丢弃(需注明理由)
+test_entries:
+- c_test_file: tests/fdb_kvdb_tc.c
+  rust_test_file: tests/c-port/kvdb_equiv.rs
+  test_functions:
+  - test_fdb_kvdb_init_by_sector_num
+  - test_fdb_kvdb_init
+  - test_fdb_kvdb_init_by_8_sectors
+  - test_fdb_kvdb_init_check
+  - test_fdb_kvdb_deinit
+  - test_fdb_create_kv_blob
+  - test_fdb_change_kv_blob
+  - test_fdb_del_kv_blob
+  - test_fdb_create_kv
+  - test_fdb_change_kv
+  - test_fdb_del_kv
+  - test_save_fdb_by_kvs
+  - test_check_fdb_by_kvs
+  - test_fdb_by_kvs
+  - test_fdb_gc
+  - test_fdb_gc2
+  - test_fdb_scale_up
+  - test_fdb_kvdb_set_default
+- c_test_file: tests/fdb_tsdb_tc.c
+  rust_test_file: tests/c-port/tsdb_equiv.rs
+  test_functions:
+  - test_fdb_tsdb_init_ex
+  - test_fdb_tsdb_deinit
+  - test_fdb_tsl_append
+  - test_fdb_tsl_iter_cb
+  - test_fdb_tsl_iter
+  - test_fdb_tsl_iter_by_time
+  - test_fdb_tsl_query_count
+  - est_fdb_tsl_set_status_cb
+  - test_fdb_tsl_set_status
+  - test_fdb_tsl_clean_cb
+  - test_fdb_tsl_clean
+  - query_cb
+  - get_sector_info_cb
+  - test_tsdb_data_by_time
+  - test_fdb_tsl_sector_bound_test
+  - test_fdb_tsl_iter_by_time_1
+  - test_fdb_github_issue_249
+summary:
+  test_file_count: 2
+  test_function_count: 35

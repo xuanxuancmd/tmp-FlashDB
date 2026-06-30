@@ -2,7 +2,6 @@ connect-rust/target
 connect-rust/.idea
 .opencode/node_modules
 *.log
-.sisyphus
 **/__pycache__/
 target
 worktrees

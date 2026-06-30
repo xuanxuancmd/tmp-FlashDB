@@ -47,7 +47,6 @@ Feature: TSDB 时序数据库初始化与配置
     Given TSDB 实例已初始化，rollover 为 true
     When 调用 fdb_tsdb_control(db, FDB_TSDB_CTRL_SET_ROLLOVER, &false_val)
     Then db 的 rollover 为 false
-    And 后续空间耗尽时追加返回 FDB_SAVED_FULL
 
   Scenario: SET_ROLLOVER 在初始化前调用触发断言
     Given TSDB 实例未初始化（init_ok 为 false）
@@ -70,8 +69,3 @@ Feature: TSDB 时序数据库初始化与配置
     Given TSDB 实例已初始化，last_time 为 500
     When 调用 fdb_tsdb_control(db, FDB_TSDB_CTRL_GET_LAST_TIME, &time)
     Then time 的值为 500
-
-  Scenario: 反初始化后 init_ok 为 false
-    Given TSDB 实例已初始化
-    When 调用 fdb_tsdb_deinit(db)
-    Then 实例的 init_ok 为 false

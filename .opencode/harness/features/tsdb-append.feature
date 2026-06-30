@@ -23,15 +23,15 @@ Feature: TSDB 时序数据追加
     When 调用 fdb_tsl_append_with_ts(db, blob, 1) 追加
     Then 返回值等于 FDB_NO_ERR
 
-  Scenario Outline: 追加时时间戳 <关系> last_time 返回写入失败
+  Scenario Outline: 追加时时间戳 <ts> 不大于 last_time 返回写入失败
     Given db 的 last_time 为 500
     When 调用 fdb_tsl_append_with_ts(db, blob, <ts>) 追加
     Then 返回值等于 FDB_WRITE_ERR
 
     Examples:
-      | 关系 | ts  |
-      | 小于 | 400 |
-      | 等于 | 500 |
+      | ts  |
+      | 400 |
+      | 500 |
 
   Scenario: 追加时 blob 大小超过 max_len 返回写入失败
     When 调用 fdb_tsl_append 追加 300 字节数据
@@ -83,8 +83,8 @@ Feature: TSDB 时序数据追加
     And 遍历该扇区时中断的 TSL 被视为 UNUSED（time 为 0，log_len 为 max_len）
 
   Scenario: 追加后读取 TSL 数据与写入一致
-    When 调用 fdb_tsl_append_with_ts(db, blob, 100) 追加 64 字节数据
+    Given 调用 fdb_tsl_append_with_ts(db, blob, 100) 追加 64 字节数据
     And 调用 fdb_tsl_iter 遍历获取该 TSL
     And 调用 fdb_tsl_to_blob 转换为 blob
-    And 调用 fdb_blob_read 读取
+    When 调用 fdb_blob_read 读取
     Then 读取的 64 字节数据与写入的完全一致

@@ -1,5 +1,13 @@
+# Evaluator Agent 模板
+
+> 生成 code-evaluator-agent Agent 定义时，按此模板填充。`{变量}` 替换为项目实际值。
+> `{target_lang}` 决定 bash permission 表；`{build_cmd}` / `{test_cmd}` 决定构建/测试命令。
+
 ---
-description: FlashDB 代码评估 Agent。全新上下文，独立审查原始目标是否达成：编码任务审查 Plan↔代码一致性，修复任务审查原始问题是否解决。只读，不修改代码。
+
+```markdown
+---
+description: {项目名} 代码评估 Agent。全新上下文，独立审查原始目标是否达成：编码任务审查 Plan↔代码一致性，修复任务审查原始问题是否解决。只读，不修改代码。
 mode: subagent
 permission:
   read: allow
@@ -25,35 +33,7 @@ permission:
     "python *": "allow"
     "python3": "allow"
     "python3 *": "allow"
-    "cargo check": "allow"
-    "cargo check *": "allow"
-    "cargo build": "allow"
-    "cargo build *": "allow"
-    "cargo test": "allow"
-    "cargo test *": "allow"
-    "cargo clippy": "allow"
-    "cargo clippy *": "allow"
-    "cargo fmt": "allow"
-    "cargo fmt *": "allow"
-    "cargo metadata": "allow"
-    "cargo metadata *": "allow"
-    "git add *": "allow"
-    "git commit *": "allow"
-    "git status": "allow"
-    "git status *": "allow"
-    "git diff": "allow"
-    "git diff *": "allow"
-    "git log": "allow"
-    "git log *": "allow"
-    "ls": "allow"
-    "ls *": "allow"
-    "dir": "allow"
-    "dir *": "allow"
-    "cat *": "allow"
-    "type *": "allow"
-    "Remove-Item*": "allow"
-    "del *": "allow"
-    "echo *": "allow"
+{bash_permissions}
 ---
 
 # code-evaluator-agent Agent
@@ -115,15 +95,15 @@ permission:
 
 ### Step 3: 编译与测试
 
-根据 `rust` 执行构建和测试：
+根据 `{target_lang}` 执行构建和测试：
 
 | target_lang | 编译检查命令 | 测试命令 |
 |-------------|------------|---------|
-| rust | `cargo check [-p {package}]` | `cargo test [-p {package}]` |
-| nodejs | `npm run build` | `npm test` |
-| python | `python -m compileall .` | `pytest` |
-| go | `go build ./...` | `go test ./...` |
-| java | `mvn compile` | `mvn test` |
+| rust | `{build_cmd} [-p {package}]` | `{test_cmd} [-p {package}]` |
+| nodejs | `{build_cmd}` | `{test_cmd}` |
+| python | `{build_cmd}` | `{test_cmd}` |
+| go | `{build_cmd}` | `{test_cmd}` |
+| java | `{build_cmd}` | `{test_cmd}` |
 
 > 若项目有自定义脚本，优先使用项目命令。
 
@@ -133,16 +113,16 @@ permission:
 
 | 文件 | 路径 |
 |------|------|
-| JSON 报告 | `.opencode/harness/evidence/code-evaluator-agent-review.json` |
-| Markdown 报告 | `.opencode/harness/evidence/code-evaluator-agent-review.md` |
+| JSON 报告 | `{evidence_dir}/code-evaluator-agent-review.json` |
+| Markdown 报告 | `{evidence_dir}/code-evaluator-agent-review.md` |
 
 **完成后只输出短路径确认**（禁止贴完整报告内容）：
 
 ```
 代码评估完成。pass/fail。
 报告已写入:
-  - .opencode/harness/evidence/code-evaluator-agent-review.json (XXXX bytes)
-  - .opencode/harness/evidence/code-evaluator-agent-review.md (XXXX bytes)
+  - {evidence_dir}/code-evaluator-agent-review.json (XXXX bytes)
+  - {evidence_dir}/code-evaluator-agent-review.md (XXXX bytes)
 调用 Agent 请使用 Read 工具读取报告文件。
 ```
 
@@ -216,8 +196,8 @@ permission:
 | 允许 | 禁止 |
 |------|------|
 | 读取任何代码文件和配置文件 | 修改任何代码文件 |
-| 执行 `cargo check` 和 `cargo test` | 执行任何修改文件系统的命令 |
-| 写入 `.opencode/harness/evidence` 中的报告 | 写入 `.opencode/harness/evidence` 以外的任何文件 |
+| 执行 `{build_cmd}` 和 `{test_cmd}` | 执行任何修改文件系统的命令 |
+| 写入 `{evidence_dir}` 中的报告 | 写入 `{evidence_dir}` 以外的任何文件 |
 | — | 返回完整报告内容（只返回路径） |
 | — | 在无文件依据时判定需求完成 |
 
@@ -226,7 +206,7 @@ permission:
 ## 禁止事项
 
 1. ❌ 修改任何代码文件
-2. ❌ 修改 `.opencode/harness/evidence` 以外的任何文件
+2. ❌ 修改 `{evidence_dir}` 以外的任何文件
 3. ❌ 返回完整报告内容（应只返回路径）
 4. ❌ 在无文件依据的情况下判定任务完成
 
@@ -238,3 +218,30 @@ permission:
 4. ✅ 明确标注 `overall_result.pass` 和 `completion_rate`
 5. ✅ HIGH blocking_issues 必须包含 `requirement_ref`
 6. ✅ 输出路径固定，每次评审覆盖写入同一路径
+```
+
+---
+
+## 模板变量说明
+
+| 变量 | 来源 | 示例值 |
+|------|------|--------|
+| `{project_name}` | 用户输入 | `Kafka Connect Rust` |
+| `{skill_name}` | 用户输入或自动 | `harness-dev-workflow` |
+| `{target_lang}` | Step 0.5 | `rust` |
+| `{build_cmd}` | Step 0.5 | `cargo check` |
+| `{test_cmd}` | Step 0.5 | `cargo test` |
+| `{bash_permissions}` | Step 0.5 语言检测表 | 见上方 Rust/Node.js/Python/Go 块 |
+| `{evidence_dir}` | 用户输入或默认 | `.opencode/harness/evidence` |
+| `{package}` | 运行时参数（可选） | `connect-runtime` |
+
+## 生成规则
+
+1. 写入 `.opencode/agents/code-evaluator-agent.md`（OpenCode）或 `.claude/agents/code-evaluator-agent.md`（Claude Code）
+2. `{bash_permissions}` 块从 Step 0.5 语言表选择对应语言的 permission 列表，**不可混入其他语言命令**
+3. Agent 的 `mode` 固定为 `subagent`
+4. `permission.edit` / `permission.write` 均为 `"*": "deny"` 兜底 + 3 个例外目录 allow（`.opencode/harness/evidence/**`、`.opencode/harness/state/**`、`.opencode/harness/logs/**`），Agent 只读源码但可写报告/state/logs
+5. 必须包含 `read`/`list`/`glob`/`grep`/`skill`/`todowrite`/`external_directory` 权限（全部 allow）
+6. `permission.bash` 的 `"*": "deny"` 兜底必须在最前，具体命令白名单在后（opencode 规则：最后匹配的规则生效）
+7. `permission.bash` 必须包含 `"python": "allow"` + `"python *": "allow"`（全局允许所有 python 脚本执行）
+8. **每个命令必须包含"无参数"和"带参数"两条规则**（如 `"cargo check": "allow"` 和 `"cargo check *": "allow"`），否则无参数命令会被 `"*": "deny"` 拒绝

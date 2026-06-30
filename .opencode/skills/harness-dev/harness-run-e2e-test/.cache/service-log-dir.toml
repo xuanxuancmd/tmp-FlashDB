@@ -1,0 +1,1 @@
+﻿service_log_dir = "C:/wanglong/temp/kafka-rust/connect-rust/target/logs/connect.log"

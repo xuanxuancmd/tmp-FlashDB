@@ -1,0 +1,479 @@
+metadata:
+  module: flashdb
+  manifest_type: source
+  generated_at: '2026-06-30T22:18:40.502792'
+  c_root: C:/wanglong/temp/FlashDB
+  rust_root: src
+  generator: build_golden_manifest.py
+  note: FlashDB C→Rust 1:1 翻译源码黄金清单。public API（fdb_* 且非 static）必须 1:1 翻译为 Rust pub
+    fn。static 函数翻译为 pub(crate) fn 或私有 fn。
+entries:
+- c_file: inc/fdb_cfg_template.h
+  rust_file: cfg_template.rs
+  macros:
+  - _FDB_CFG_H_
+  - FDB_USING_KVDB
+  - FDB_USING_TSDB
+  - FDB_USING_FAL_MODE
+  - FDB_WRITE_GRAN
+  - FDB_DEBUG_ENABLE
+- c_file: inc/fdb_def.h
+  rust_file: def.rs
+  structs:
+  - fdb_default_kv_node
+  - fdb_default_kv
+  - fdb_default_kv_node
+  - fdb_kv
+  - fdb_kv
+  - fdb_kv_iterator
+  - fdb_kv
+  - fdb_kv_iterator
+  - fdb_tsl
+  - fdb_tsl
+  - kvdb_sec_info
+  - kvdb_sec_info
+  - tsdb_sec_info
+  - tsdb_sec_info
+  - kv_cache_node
+  - kv_cache_node
+  - fdb_db
+  - fdb_db
+  - fal_partition
+  - fdb_kvdb
+  - fdb_db
+  - fdb_default_kv
+  - fdb_kv
+  - kvdb_sec_info
+  - kv_cache_node
+  - kvdb_sec_info
+  - fdb_kvdb
+  - fdb_tsdb
+  - fdb_db
+  - tsdb_sec_info
+  - fdb_tsdb
+  - fdb_blob
+  - fdb_blob
+  enums:
+  - fdb_kv_status
+  - fdb_kv_status
+  - fdb_tsl_status
+  - fdb_tsl_status
+  - fdb_sector_store_status
+  - fdb_sector_store_status
+  - fdb_sector_dirty_status
+  - fdb_sector_dirty_status
+  typedefs:
+  - fdb_time_t
+  - fdb_time_t
+  - fdb_time_t
+  - fdb_err_t
+  - fdb_kv_status_t
+  - fdb_tsl_status_t
+  - fdb_db_type
+  - fdb_sector_store_status_t
+  - fdb_sector_dirty_status_t
+  macros:
+  - _FDB_DEF_H_
+  - FDB_SW_VERSION
+  - FDB_SW_VERSION_NUM
+  - FDB_KV_NAME_MAX
+  - FDB_KV_CACHE_TABLE_SIZE
+  - FDB_SECTOR_CACHE_TABLE_SIZE
+  - FDB_KV_USING_CACHE
+  - FDB_USING_FILE_MODE
+  - FDB_FILE_CACHE_TABLE_SIZE
+  - FDB_WRITE_GRAN
+  - FDB_KVDB_CTRL_SET_SEC_SIZE
+  - FDB_KVDB_CTRL_GET_SEC_SIZE
+  - FDB_KVDB_CTRL_SET_LOCK
+  - FDB_KVDB_CTRL_SET_UNLOCK
+  - FDB_KVDB_CTRL_SET_FILE_MODE
+  - FDB_KVDB_CTRL_SET_MAX_SIZE
+  - FDB_KVDB_CTRL_SET_NOT_FORMAT
+  - FDB_TSDB_CTRL_SET_SEC_SIZE
+  - FDB_TSDB_CTRL_GET_SEC_SIZE
+  - FDB_TSDB_CTRL_SET_LOCK
+  - FDB_TSDB_CTRL_SET_UNLOCK
+  - FDB_TSDB_CTRL_SET_ROLLOVER
+  - FDB_TSDB_CTRL_GET_ROLLOVER
+  - FDB_TSDB_CTRL_GET_LAST_TIME
+  - FDB_TSDB_CTRL_SET_FILE_MODE
+  - FDB_TSDB_CTRL_SET_MAX_SIZE
+  - FDB_TSDB_CTRL_SET_NOT_FORMAT
+  macro_funcs:
+  - FDB_PRINT
+  - FDB_LOG_PREFIX1
+  - FDB_LOG_PREFIX2
+  - FDB_LOG_PREFIX
+  - FDB_DEBUG
+  - FDB_DEBUG
+  - FDB_INFO
+  - FDB_ASSERT
+  - FDB_ASSERT
+- c_file: inc/fdb_low_lvl.h
+  rust_file: low_lvl.rs
+  macros:
+  - _FDB_LOW_LVL_H_
+  - FDB_BYTE_ERASED
+  - FDB_BYTE_WRITTEN
+  - FDB_STORE_STATUS_TABLE_SIZE
+  - FDB_DIRTY_STATUS_TABLE_SIZE
+  - FDB_DATA_UNUSED
+  - FDB_DATA_UNUSED
+  - FDB_FAILED_ADDR
+  macro_funcs:
+  - FDB_STATUS_TABLE_SIZE
+  - FDB_STATUS_TABLE_SIZE
+  - FDB_ALIGN
+  - FDB_WG_ALIGN
+  - FDB_ALIGN_DOWN
+  - FDB_WG_ALIGN_DOWN
+- c_file: inc/flashdb.h
+  rust_file: flashdb.rs
+  structs:
+  - fdb_default_kv
+  macros:
+  - _FLASHDB_H_
+- c_file: src/fdb.c
+  rust_file: init.rs
+  functions:
+  - name: _fdb_init_ex
+    public: false
+  - name: _fdb_init_finish
+    public: false
+  - name: _fdb_deinit
+    public: false
+  - name: _fdb_db_path
+    public: false
+  macros:
+  - FDB_LOG_TAG
+- c_file: src/fdb_file.c
+  rust_file: file.rs
+  functions:
+  - name: get_db_file_path
+    public: false
+  - name: get_file_from_cache
+    public: false
+  - name: update_file_cache
+    public: false
+  - name: open_db_file
+    public: false
+  - name: _fdb_file_read
+    public: false
+  - name: _fdb_file_write
+    public: false
+  - name: _fdb_file_erase
+    public: false
+  - name: get_file_from_cache
+    public: false
+  - name: update_file_cache
+    public: false
+  - name: open_db_file
+    public: false
+  - name: _fdb_file_read
+    public: false
+  - name: _fdb_file_write
+    public: false
+  - name: _fdb_file_erase
+    public: false
+  macros:
+  - FDB_LOG_TAG
+  - DB_PATH_MAX
+- c_file: src/fdb_kvdb.c
+  rust_file: kvdb.rs
+  functions:
+  - name: update_sector_cache
+    public: false
+  - name: get_sector_from_cache
+    public: false
+  - name: update_sector_empty_addr_cache
+    public: false
+  - name: update_sector_status_store_cache
+    public: false
+  - name: update_kv_cache
+    public: false
+  - name: get_kv_from_cache
+    public: false
+  - name: find_next_kv_addr
+    public: false
+  - name: get_next_kv_addr
+    public: false
+  - name: read_kv
+    public: false
+  - name: read_sector_info
+    public: false
+  - name: get_next_sector_addr
+    public: false
+  - name: kv_iterator
+    public: false
+  - name: find_kv_cb
+    public: false
+  - name: find_kv_no_cache
+    public: false
+  - name: find_kv
+    public: false
+  - name: fdb_is_str
+    public: false
+  - name: get_kv
+    public: false
+  - name: fdb_kv_get_obj
+    public: true
+  - name: fdb_kv_to_blob
+    public: true
+  - name: fdb_kv_get_blob
+    public: true
+  - name: fdb_kv_get
+    public: true
+  - name: write_kv_hdr
+    public: false
+  - name: format_sector
+    public: false
+  - name: update_sec_status
+    public: false
+  - name: sector_iterator
+    public: false
+  - name: sector_statistics_cb
+    public: false
+  - name: alloc_kv_cb
+    public: false
+  - name: alloc_kv
+    public: false
+  - name: del_kv
+    public: false
+  - name: move_kv
+    public: false
+  - name: new_kv
+    public: false
+  - name: new_kv_ex
+    public: false
+  - name: gc_check_cb
+    public: false
+  - name: do_gc
+    public: false
+  - name: gc_collect_by_free_size
+    public: false
+  - name: gc_collect
+    public: false
+  - name: create_kv_blob
+    public: false
+  - name: fdb_kv_del
+    public: true
+  - name: set_kv
+    public: false
+  - name: fdb_kv_set_blob
+    public: true
+  - name: fdb_kv_set
+    public: true
+  - name: fdb_kv_set_default
+    public: true
+  - name: print_kv_cb
+    public: false
+  - name: fdb_kv_print
+    public: true
+  - name: kv_auto_update
+    public: false
+  - name: check_oldest_addr_cb
+    public: false
+  - name: check_sec_hdr_cb
+    public: false
+  - name: check_and_recovery_gc_cb
+    public: false
+  - name: check_and_recovery_kv_cb
+    public: false
+  - name: _fdb_kv_load
+    public: false
+  - name: fdb_kvdb_control
+    public: true
+  - name: fdb_kvdb_init
+    public: true
+  - name: fdb_kvdb_deinit
+    public: true
+  - name: fdb_kv_iterator_init
+    public: true
+  - name: fdb_kv_iterate
+    public: true
+  - name: fdb_kvdb_check
+    public: true
+  structs:
+  - sector_hdr_data
+  - sector_hdr_data
+  - kv_hdr_data
+  - kv_hdr_data
+  - alloc_kv_cb_args
+  - gc_cb_args
+  macros:
+  - FDB_LOG_TAG
+  - SECTOR_MAGIC_WORD
+  - KV_MAGIC_WORD
+  - GC_MIN_EMPTY_SEC_NUM
+  - FDB_SEC_REMAIN_THRESHOLD
+  - FDB_GC_EMPTY_SEC_THRESHOLD
+  - FDB_STR_KV_VALUE_MAX_SIZE
+  - SECTOR_NOT_COMBINED
+  - SECTOR_COMBINED
+  - SECTOR_NOT_COMBINED
+  - SECTOR_COMBINED
+  - FAILED_ADDR
+  - KV_STATUS_TABLE_SIZE
+  - SECTOR_NUM
+  - SECTOR_HDR_DATA_SIZE
+  - SECTOR_STORE_OFFSET
+  - SECTOR_DIRTY_OFFSET
+  - SECTOR_MAGIC_OFFSET
+  - KV_HDR_DATA_SIZE
+  - KV_MAGIC_OFFSET
+  - KV_LEN_OFFSET
+  - KV_NAME_LEN_OFFSET
+  - VER_NUM_KV_NAME
+  macro_funcs:
+  - FDB_LOG_PREFIX2
+  - db_name
+  - db_init_ok
+  - db_sec_size
+  - db_max_size
+  - db_oldest_addr
+  - db_lock
+  - db_unlock
+- c_file: src/fdb_tsdb.c
+  rust_file: tsdb.rs
+  functions:
+  - name: read_tsl
+    public: false
+  - name: get_next_sector_addr
+    public: false
+  - name: get_next_tsl_addr
+    public: false
+  - name: get_last_tsl_addr
+    public: false
+  - name: get_last_sector_addr
+    public: false
+  - name: read_sector_info
+    public: false
+  - name: format_sector
+    public: false
+  - name: sector_iterator
+    public: false
+  - name: write_tsl
+    public: false
+  - name: update_sec_status
+    public: false
+  - name: tsl_append
+    public: false
+  - name: fdb_tsl_append
+    public: true
+  - name: fdb_tsl_append_with_ts
+    public: true
+  - name: fdb_tsl_iter
+    public: true
+  - name: fdb_tsl_iter_reverse
+    public: true
+  - name: search_start_tsl_addr
+    public: false
+  - name: fdb_tsl_iter_by_time
+    public: true
+  - name: query_count_cb
+    public: false
+  - name: fdb_tsl_query_count
+    public: true
+  - name: fdb_tsl_max_blob_count
+    public: true
+  - name: fdb_tsl_set_status
+    public: true
+  - name: fdb_tsl_to_blob
+    public: true
+  - name: check_sec_hdr_cb
+    public: false
+  - name: format_all_cb
+    public: false
+  - name: tsl_format_all
+    public: false
+  - name: fdb_tsl_clean
+    public: true
+  - name: fdb_tsdb_control
+    public: true
+  - name: fdb_tsdb_init
+    public: true
+  - name: fdb_tsdb_deinit
+    public: true
+  structs:
+  - sector_hdr_data
+  - sector_hdr_data
+  - log_idx_data
+  - log_idx_data
+  - query_count_args
+  - check_sec_hdr_cb_args
+  macros:
+  - FDB_LOG_TAG
+  - SECTOR_MAGIC_WORD
+  - TSL_STATUS_TABLE_SIZE
+  - TSL_UINT32_ALIGN_SIZE
+  - TSL_TIME_ALIGN_SIZE
+  - TSL_TIME_ALIGN_SIZE
+  - SECTOR_HDR_PADDING_SIZE
+  - _TSL_FDBTIME_SIZE
+  - _TSL_FDBTIME_SIZE
+  - LOG_IDX_BASE_SIZE
+  - LOG_IDX_BASE_SIZE
+  - LOG_IDX_PADDING_SIZE
+  - SECTOR_HDR_DATA_SIZE
+  - LOG_IDX_DATA_SIZE
+  - LOG_IDX_TS_OFFSET
+  - SECTOR_MAGIC_OFFSET
+  - SECTOR_START_TIME_OFFSET
+  - SECTOR_END0_TIME_OFFSET
+  - SECTOR_END0_IDX_OFFSET
+  - SECTOR_END0_STATUS_OFFSET
+  - SECTOR_END1_TIME_OFFSET
+  - SECTOR_END1_IDX_OFFSET
+  - SECTOR_END1_STATUS_OFFSET
+  - FAILED_ADDR
+  macro_funcs:
+  - FDB_LOG_PREFIX2
+  - db_name
+  - db_init_ok
+  - db_sec_size
+  - db_max_size
+  - db_oldest_addr
+  - db_lock
+  - db_unlock
+  - _FDB_WRITE_STATUS
+  - FLASH_WRITE
+- c_file: src/fdb_utils.c
+  rust_file: utils.rs
+  functions:
+  - name: fdb_calc_crc32
+    public: true
+  - name: _fdb_set_status
+    public: false
+  - name: _fdb_get_status
+    public: false
+  - name: _fdb_write_status
+    public: false
+  - name: _fdb_read_status
+    public: false
+  - name: _fdb_continue_ff_addr
+    public: false
+  - name: fdb_blob_make
+    public: true
+  - name: fdb_blob_read
+    public: true
+  - name: _fdb_flash_read
+    public: false
+  - name: _fdb_flash_erase
+    public: false
+  - name: _fdb_flash_write
+    public: false
+  - name: _fdb_flash_write_align
+    public: false
+  macros:
+  - FDB_LOG_TAG
+summary:
+  file_count: 9
+  function_count: 114
+  public_api_count: 31
+  static_function_count: 83
+  struct_count: 46
+  enum_count: 8
+  typedef_count: 9
+  macro_count: 93
+  macro_func_count: 33

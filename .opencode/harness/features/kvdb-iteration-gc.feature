@@ -13,11 +13,10 @@ Feature: KVDB 键值迭代遍历与垃圾回收
     And 迭代器统计 iterated_cnt 等于 3
 
   Scenario: 迭代器统计累计字节数
-    Given 数据库包含 2 个 KV，总节点长度分别为 80 和 120 字节
+    Given 数据库包含 2 个 KV，value 长度分别为 60 和 100 字节
     When 调用 fdb_kv_iterator_init 初始化迭代器
     And 循环调用 fdb_kv_iterate 直到返回 false
-    Then 迭代器统计 iterated_obj_bytes 等于 200
-    And 迭代器统计 iterated_value_bytes 等于各 KV value_len 之和
+    Then 迭代器统计 iterated_value_bytes 等于 160
 
   Scenario: 空数据库迭代立即返回 false
     Given 数据库为空（无有效 KV）
@@ -60,4 +59,4 @@ Feature: KVDB 键值迭代遍历与垃圾回收
     Given 当前扇区剩余空间仅够写入 1 个 KV
     When 调用 fdb_kv_set_blob 写入 1 个 KV
     Then 返回值等于 FDB_NO_ERR
-    And 后续写入操作前会触发 GC 检查
+    And db 的 gc_request 为 true

@@ -1,5 +1,14 @@
+# Code Executor Agent 模板
+
+> 生成 code-executor agent 定义时，按此模板填充。`{变量}` 替换为项目实际值。
+> `{coding_skills}` 由 meta skill Step 4 扫描结果注入（烘焙到 agent 定义中，运行时不再由调用方传递）。
+> `{bash_permissions}` 由 Step 2 语言检测表决定。
+
 ---
-description: FlashDB 编码执行 Agent。独立上下文，纯执行者：按 Plan 编码（mode=coding）或按 issue 列表修复（mode=fix）。不拉起任何 sub-agent，不执行检视/评估/编排。拥有编码所需的读写与构建权限。
+
+```markdown
+---
+description: {项目名} 编码执行 Agent。独立上下文，纯执行者：按 Plan 编码（mode=coding）或按 issue 列表修复（mode=fix）。不拉起任何 sub-agent，不执行检视/评估/编排。拥有编码所需的读写与构建权限。
 mode: subagent
 permission:
   edit: allow
@@ -15,39 +24,7 @@ permission:
     "*": "deny"
   bash:
     "*": "deny"
-    "cargo check": "allow"
-    "cargo check *": "allow"
-    "cargo build": "allow"
-    "cargo build *": "allow"
-    "cargo test": "allow"
-    "cargo test *": "allow"
-    "cargo clippy": "allow"
-    "cargo clippy *": "allow"
-    "cargo fmt": "allow"
-    "cargo fmt *": "allow"
-    "cargo metadata": "allow"
-    "cargo metadata *": "allow"
-    "git add *": "allow"
-    "git commit *": "allow"
-    "git status": "allow"
-    "git status *": "allow"
-    "git diff": "allow"
-    "git diff *": "allow"
-    "git log": "allow"
-    "git log *": "allow"
-    "python": "allow"
-    "python *": "allow"
-    "python3": "allow"
-    "python3 *": "allow"
-    "ls": "allow"
-    "ls *": "allow"
-    "dir": "allow"
-    "dir *": "allow"
-    "cat *": "allow"
-    "type *": "allow"
-    "Remove-Item*": "allow"
-    "del *": "allow"
-    "echo *": "allow"
+{bash_permissions}
 ---
 
 # code-executor-agent
@@ -121,10 +98,7 @@ context_summary: {summary_path}
 
 在 `coding` 阶段开始前，必须调用 `skill()` 工具逐一加载以下技能：
 
-| 技能 | 用途 |
-|------|------|
-| c-translate-to-rust | C 到 Rust 1:1 代码翻译指南，提供语法映射、禁令表、易错表 |
-| harness-bdd-design | Cucumber/Gherkin BDD 测试场景 Discovery + Formulation |
+{coding_skills}
 
 > 若表格为空，则跳过技能加载，直接按计划执行编码。
 > **mode=fix 时不加载编码技能**（修复只需读 SUMMARY + issues + 代码，不需要从零编码的翻译/BDD 指引）。
@@ -148,7 +122,7 @@ context_summary: {summary_path}
 3. 调用 TodoWrite 创建流程清单：
 
 ```
-1. ☐ 编码：实现 Plan 中所有 task（每个 task 完成后执行 `cargo check` + `cargo test` 自检）
+1. ☐ 编码：实现 Plan 中所有 task（每个 task 完成后执行 `{build_cmd}` + `{test_cmd}` 自检）
 2. ☐ 完成：刷新 state status=completed + Self-Check
 ```
 
@@ -171,8 +145,8 @@ context_summary: {summary_path}
 task 实现完成后执行：
 
 ```bash
-cargo check
-cargo test
+{build_cmd}
+{test_cmd}
 ```
 
 **自检结果处理**：
@@ -188,7 +162,7 @@ build 或 test 失败时：
 
 1. 读取错误输出，诊断根因
 2. 修复代码（针对该 task 的实现文件，**禁止通过修改/删除测试来让测试通过**）
-3. 重新运行 `cargo check` + `cargo test`
+3. 重新运行 `{build_cmd}` + `{test_cmd}`
 4. 仍失败 → 重试（最多 3 次尝试，包含首次实现）
 5. **5 次仍未通过** → 标记该 task 为 `deviation-blocked`，记录错误签名到 state 的 `attempt_counts`，设置 `status="blocked"`，写入 blocked-reports，立即返回 PLAN COMPLETE 信号（`status=blocked`）
 
@@ -211,7 +185,7 @@ build 或 test 失败时：
 5. 调用 TodoWrite 创建流程清单：
 
 ```
-1. ☐ 修复 issue 1..N（每个修复后执行 `cargo check` + `cargo test` 自检）
+1. ☐ 修复 issue 1..N（每个修复后执行 `{build_cmd}` + `{test_cmd}` 自检）
 2. ☐ 完成：刷新 state status=completed + Self-Check
 ```
 
@@ -232,8 +206,8 @@ build 或 test 失败时：
 修复后执行（在 `worktree_path` 下）：
 
 ```bash
-cargo check
-cargo test
+{build_cmd}
+{test_cmd}
 ```
 
 **自检结果处理**：
@@ -278,8 +252,8 @@ git commit -m "fix({issue_id}): <issue 简述>
 
 ## 构建/测试自检
 
-- `cargo check`: <pass / fail（最后一次）>
-- `cargo test`: <pass / fail（最后一次）>
+- `{build_cmd}`: <pass / fail（最后一次）>
+- `{test_cmd}`: <pass / fail（最后一次）>
 
 ## 编码决策（coding 模式，供 fix session 参考）
 
@@ -294,7 +268,7 @@ git commit -m "fix({issue_id}): <issue 简述>
 
 1. state.json 的 `tasks_remaining` 为空数组（所有 task/issue 已处理）或 `status="blocked"`（某项 3 次未通过）
 2. 每个正常完成的 task/issue 都有对应的 git commit hash
-3. 最终 `cargo check` + `cargo test` 均 pass（或已 blocked）
+3. 最终 `{build_cmd}` + `{test_cmd}` 均 pass（或已 blocked）
 4. TodoWrite 所有项已标记 completed
 
 **任一缺失且非 blocked 状态 → 回退到编码阶段重新执行，不标记 completed。**
@@ -385,3 +359,36 @@ blocked_reason: <仅 blocked 时有>
 9. ❌ 不读错误输出就重试，或用相同代码重试
 10. ❌ Agent 自主暂停（非显式 `question()` 的任何等待行为）
 11. ❌ 向用户输出完整报告内容（只输出路径）
+```
+
+---
+
+## 模板变量说明
+
+| 变量 | 来源 | 示例值 |
+|------|------|--------|
+| `{project_name}` | 用户输入（SKILL.md 中项目名） | `Kafka Connect Rust` |
+| `{target_lang}` | Step 2 语言检测 | `rust` |
+| `{build_cmd}` | Step 2 语言检测表 | `cargo check -p connect-runtime` |
+| `{test_cmd}` | Step 2 语言检测表 | `cargo test -p connect-runtime` |
+| `{bash_permissions}` | Step 2 语言命令表 | 见 evaluator agent 模板的 permission 块 |
+| `{coding_skills}` | Step 4.1 coding 阶段扫描结果 | markdown 表格（每行一个 skill） |
+
+## 生成规则
+
+1. 写入路径：
+   | 平台 | 路径 |
+   |------|------|
+   | OpenCode | `.opencode/agents/code-executor-agent.md` |
+   | Claude Code | `.claude/agents/code-executor-agent.md` |
+
+2. **覆盖策略**：若已存在，直接覆盖写入（保持模板与生成产物一致）
+3. `mode` 固定为 `subagent`
+4. `permission.edit` 固定为 `allow`（Agent 有完整读写权限，区别于 evaluator 的 `deny`）
+5. `permission.task` 固定为 `"*": "deny"`（**架构硬约束：executor 禁止拉起 sub-agent**）
+6. `permission` 必须包含 `read`/`list`/`skill`/`todowrite`/`external_directory`（sub-agent 需读 Plan 文件、加载 skill、TodoWrite 清单、读项目外 Java 源码）
+7. `permission.bash` 的 `"*": "deny"` 兜底必须在最前，具体命令白名单在后（opencode 规则：最后匹配的规则生效，deny 在前 allow 在后才能让白名单生效）
+8. `{coding_skills}` 必须在 agent `.md` 生成时完全填充，不留空占位符
+9. `{bash_permissions}` 从 Step 2 语言命令表选择，**每个命令必须包含"无参数"和"带参数"两条规则**（如 `"cargo check": "allow"` 和 `"cargo check *": "allow"`），否则无参数命令会被 `"*": "deny"` 拒绝
+10. 总行数建议 180–250 行
+
