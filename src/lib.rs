@@ -6,6 +6,8 @@ pub mod def;
 pub mod flash_trait;
 pub mod init;
 pub mod low_lvl;
+#[cfg(feature = "tsdb")]
+pub mod tsdb;
 
 #[cfg(test)]
 pub mod mock_flash;
