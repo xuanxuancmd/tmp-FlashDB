@@ -22,7 +22,7 @@ pub(crate) const fn align_up(size: u32, align: u32) -> u32 {
 
 /// c: fdb_low_lvl.h:34 — FDB_WG_ALIGN(size): align `size` up by write granularity.
 pub(crate) const fn wg_align(size: u32) -> u32 {
-    align_up(size, (FDB_WRITE_GRAN + 7) / 8)
+    align_up(size, FDB_WRITE_GRAN.div_ceil(8))
 }
 
 /// c: fdb_low_lvl.h:39 — FDB_ALIGN_DOWN(size, align): round `size` down to a multiple of `align`.
@@ -33,7 +33,7 @@ pub(crate) const fn align_down(size: u32, align: u32) -> u32 {
 
 /// c: fdb_low_lvl.h:41 — FDB_WG_ALIGN_DOWN(size): align `size` down by write granularity.
 pub(crate) const fn wg_align_down(size: u32) -> u32 {
-    align_down(size, (FDB_WRITE_GRAN + 7) / 8)
+    align_down(size, FDB_WRITE_GRAN.div_ceil(8))
 }
 
 // ===== Status table size (c: fdb_low_lvl.h:18-22) =====
@@ -44,9 +44,9 @@ pub(crate) const fn wg_align_down(size: u32) -> u32 {
 /// For GRAN>1 each status occupies GRAN/8 bytes (one byte written per step).
 pub(crate) const fn status_table_size(status_num: u32) -> u32 {
     if FDB_WRITE_GRAN == 1 {
-        (status_num * FDB_WRITE_GRAN + 7) / 8
+        (status_num * FDB_WRITE_GRAN).div_ceil(8)
     } else {
-        ((status_num - 1) * FDB_WRITE_GRAN + 7) / 8
+        ((status_num - 1) * FDB_WRITE_GRAN).div_ceil(8)
     }
 }
 
@@ -209,7 +209,7 @@ pub fn flash_write_align<F: FlashDevice>(flash: &mut F, addr: u32, buf: &[u8]) -
     let size = buf.len();
     // c: align_data_size = FDB_WRITE_GRAN / 8 (== (FDB_WRITE_GRAN + 7) / 8 for GRAN >= 8,
     // and 1 for GRAN == 1 via the C89 compatibility branch)
-    let wg_bytes = ((FDB_WRITE_GRAN + 7) / 8) as usize;
+    let wg_bytes = FDB_WRITE_GRAN.div_ceil(8) as usize;
     // c: FDB_WG_ALIGN_DOWN(size)
     let aligned_size = wg_align_down(size as u32) as usize;
 
@@ -306,12 +306,12 @@ pub fn continue_ff_addr<F: FlashDevice>(flash: &F, start: u32, end: u32) -> u32 
         let read_size = if cur + 32 < end { 32 } else { (end - cur) as usize };
         // c: _fdb_flash_read(db, start, buf, read_size); (C ignores the return)
         let _ = flash_read(flash, cur, &mut buf[..read_size]);
-        for i in 0..read_size {
+        for (i, &byte) in buf.iter().enumerate().take(read_size) {
             // c: if (last_data != FDB_BYTE_ERASED && buf[i] == FDB_BYTE_ERASED) addr = start + i;
-            if last_data != FDB_BYTE_ERASED && buf[i] == FDB_BYTE_ERASED {
+            if last_data != FDB_BYTE_ERASED && byte == FDB_BYTE_ERASED {
                 addr = cur + i as u32;
             }
-            last_data = buf[i];
+            last_data = byte;
         }
         cur += 32;
     }

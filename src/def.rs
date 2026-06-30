@@ -97,9 +97,9 @@ pub const FDB_DIRTY_STATUS_TABLE_SIZE: usize =
 /// c: fdb_low_lvl.h:18-22 — FDB_STATUS_TABLE_SIZE macro
 const fn status_table_size_const(status_num: usize, gran: u32) -> usize {
     if gran == 1 {
-        (status_num * gran as usize + 7) / 8
+        (status_num * gran as usize).div_ceil(8)
     } else {
-        ((status_num - 1) * gran as usize + 7) / 8
+        ((status_num - 1) * gran as usize).div_ceil(8)
     }
 }
 
@@ -249,7 +249,7 @@ impl FdbKv {
 
 // ===== KV iterator (c: fdb_def.h:176-184) =====
 /// c: fdb_def.h:176-183 — fdb_kv_iterator
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FdbKvIterator {
     /// c: fdb_def.h:177 — current KV
     pub curr_kv: FdbKv,
@@ -265,18 +265,7 @@ pub struct FdbKvIterator {
     pub traversed_len: u32,
 }
 
-impl Default for FdbKvIterator {
-    fn default() -> Self {
-        Self {
-            curr_kv: FdbKv::default(),
-            iterated_cnt: 0,
-            iterated_obj_bytes: 0,
-            iterated_value_bytes: 0,
-            sector_addr: 0,
-            traversed_len: 0,
-        }
-    }
-}
+
 
 // ===== TSL node (c: fdb_def.h:187-196) =====
 /// c: fdb_def.h:187-195 — time series log node runtime object

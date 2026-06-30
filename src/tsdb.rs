@@ -77,7 +77,7 @@ const fn align_up_usize(size: usize, align: usize) -> usize {
     if align == 0 {
         return size;
     }
-    (size + align - 1) / align * align
+    size.div_ceil(align) * align
 }
 
 // ==========================================================================
@@ -219,25 +219,25 @@ const END_INFO_IDX_OFF: usize = core::mem::offset_of!(TsdbSectorEndInfo, index);
 /// Offset of `status` within `TsdbSectorEndInfo`.
 const END_INFO_STATUS_OFF: usize = core::mem::offset_of!(TsdbSectorEndInfo, status);
 
-/// c: fdb_tsdb.c:63 — SECTOR_END0_TIME_OFFSET
-const SECTOR_END0_TIME_OFFSET: usize = SECTOR_END_INFO_OFFSET + 0 * END_INFO_SIZE + END_INFO_TIME_OFF;
+/// c: fdb_tsdb.c:63 — SECTOR_END0_TIME_OFFSET (C: &end_info[0].time)
+const SECTOR_END0_TIME_OFFSET: usize = SECTOR_END_INFO_OFFSET + END_INFO_TIME_OFF;
 
-/// c: fdb_tsdb.c:64 — SECTOR_END0_IDX_OFFSET
-const SECTOR_END0_IDX_OFFSET: usize = SECTOR_END_INFO_OFFSET + 0 * END_INFO_SIZE + END_INFO_IDX_OFF;
+/// c: fdb_tsdb.c:64 — SECTOR_END0_IDX_OFFSET (C: &end_info[0].index)
+const SECTOR_END0_IDX_OFFSET: usize = SECTOR_END_INFO_OFFSET + END_INFO_IDX_OFF;
 
-/// c: fdb_tsdb.c:65 — SECTOR_END0_STATUS_OFFSET
+/// c: fdb_tsdb.c:65 — SECTOR_END0_STATUS_OFFSET (C: &end_info[0].status)
 const SECTOR_END0_STATUS_OFFSET: usize =
-    SECTOR_END_INFO_OFFSET + 0 * END_INFO_SIZE + END_INFO_STATUS_OFF;
+    SECTOR_END_INFO_OFFSET + END_INFO_STATUS_OFF;
 
-/// c: fdb_tsdb.c:66 — SECTOR_END1_TIME_OFFSET
-const SECTOR_END1_TIME_OFFSET: usize = SECTOR_END_INFO_OFFSET + 1 * END_INFO_SIZE + END_INFO_TIME_OFF;
+/// c: fdb_tsdb.c:66 — SECTOR_END1_TIME_OFFSET (C: &end_info[1].time)
+const SECTOR_END1_TIME_OFFSET: usize = SECTOR_END_INFO_OFFSET + END_INFO_SIZE + END_INFO_TIME_OFF;
 
-/// c: fdb_tsdb.c:67 — SECTOR_END1_IDX_OFFSET
-const SECTOR_END1_IDX_OFFSET: usize = SECTOR_END_INFO_OFFSET + 1 * END_INFO_SIZE + END_INFO_IDX_OFF;
+/// c: fdb_tsdb.c:67 — SECTOR_END1_IDX_OFFSET (C: &end_info[1].index)
+const SECTOR_END1_IDX_OFFSET: usize = SECTOR_END_INFO_OFFSET + END_INFO_SIZE + END_INFO_IDX_OFF;
 
-/// c: fdb_tsdb.c:68 — SECTOR_END1_STATUS_OFFSET
+/// c: fdb_tsdb.c:68 — SECTOR_END1_STATUS_OFFSET (C: &end_info[1].status)
 const SECTOR_END1_STATUS_OFFSET: usize =
-    SECTOR_END_INFO_OFFSET + 1 * END_INFO_SIZE + END_INFO_STATUS_OFF;
+    SECTOR_END_INFO_OFFSET + END_INFO_SIZE + END_INFO_STATUS_OFF;
 
 // --- Compile-time size verification ---
 //
@@ -344,11 +344,11 @@ fn write_time_ne(buf: &mut [u8], offset: usize, val: FdbTime) {
     let len = TSL_FDBTIME_SIZE;
     #[cfg(not(feature = "timestamp_64bit"))]
     {
-        buf[offset..offset + len].copy_from_slice(&(val as i32).to_ne_bytes());
+        buf[offset..offset + len].copy_from_slice(&val.to_ne_bytes());
     }
     #[cfg(feature = "timestamp_64bit")]
     {
-        buf[offset..offset + len].copy_from_slice(&(val as i64).to_ne_bytes());
+        buf[offset..offset + len].copy_from_slice(&val.to_ne_bytes());
     }
 }
 
@@ -563,8 +563,10 @@ impl FdbTsdb {
 
         // c: fdb_tsdb.c:280-304 — traversal all TSL
         if sector.status == FdbSectorStoreStatus::Using && traversal {
-            let mut tsl = FdbTsl::default();
-            tsl.addr_index = sector.empty_idx;
+            let mut tsl = FdbTsl {
+                addr_index: sector.empty_idx,
+                ..Default::default()
+            };
             loop {
                 self.read_tsl(flash, &mut tsl);
                 if tsl.status == FdbTslStatus::Unused {
@@ -598,7 +600,7 @@ impl FdbTsdb {
     fn format_sector<F: FlashDevice>(&self, flash: &mut F, addr: u32) -> Result<(), FdbErr> {
         // c: fdb_tsdb.c:315 — FDB_ASSERT(addr % db_sec_size(db) == 0)
         assert!(
-            addr % self.parent.sec_size == 0,
+            addr.is_multiple_of(self.parent.sec_size),
             "format_sector: addr must be sector-aligned"
         );
 
@@ -957,8 +959,10 @@ impl FdbTsdb {
     /// and `cur_sec.addr` are reset to 0, and `last_time` is reset to 0.
     fn tsl_format_all<F: FlashDevice>(&mut self, flash: &mut F) {
         // c: fdb_tsdb.c:904-907 — sector_iterator with format_all_cb
-        let mut sector = TsdbSecInfo::default();
-        sector.addr = 0;
+        let mut sector = TsdbSecInfo {
+            addr: 0,
+            ..Default::default()
+        };
         let mut traversed_len = 0u32;
         loop {
             // c: sector_iterator calls read_sector_info (ignoring errors)
@@ -1037,8 +1041,10 @@ impl FdbTsdb {
         let mut empty_num: u32 = 0;
         let mut empty_addr: u32 = 0;
 
-        let mut sector = TsdbSecInfo::default();
-        sector.addr = 0;
+        let mut sector = TsdbSecInfo {
+            addr: 0,
+            ..Default::default()
+        };
         let mut traversed_len = 0u32;
 
         loop {
@@ -1269,8 +1275,10 @@ impl FdbTsdb {
                         sector = self.cur_sec.clone();
                     }
                     // c: fdb_tsdb.c:584
-                    let mut tsl = FdbTsl::default();
-                    tsl.addr_index = sector.addr + SECTOR_HDR_DATA_SIZE as u32;
+                    let mut tsl = FdbTsl {
+                        addr_index: sector.addr + SECTOR_HDR_DATA_SIZE as u32,
+                        ..Default::default()
+                    };
                     // c: fdb_tsdb.c:586-593 — search all TSL
                     loop {
                         self.read_tsl(flash, &mut tsl);
@@ -1326,8 +1334,10 @@ impl FdbTsdb {
                         sector = self.cur_sec.clone();
                     }
                     // c: fdb_tsdb.c:634
-                    let mut tsl = FdbTsl::default();
-                    tsl.addr_index = sector.end_idx;
+                    let mut tsl = FdbTsl {
+                        addr_index: sector.end_idx,
+                        ..Default::default()
+                    };
                     // c: fdb_tsdb.c:636-642 — search all TSL (reverse)
                     loop {
                         self.read_tsl(flash, &mut tsl);
@@ -1456,14 +1466,13 @@ impl FdbTsdb {
                     }
                     // c: fdb_tsdb.c:736-740 — check if this sector overlaps the target range
                     let should_search = found_start_tsl
-                        || (!found_start_tsl
-                            && (if forward {
-                                (sec_addr == start_addr && from <= sector.start_time)
-                                    || from <= sector.end_time
-                            } else {
-                                (sec_addr == start_addr && from >= sector.end_time)
-                                    || from >= sector.start_time
-                            }));
+                        || (if forward {
+                            (sec_addr == start_addr && from <= sector.start_time)
+                                || from <= sector.end_time
+                        } else {
+                            (sec_addr == start_addr && from >= sector.end_time)
+                                || from >= sector.start_time
+                        });
 
                     if should_search {
                         // c: fdb_tsdb.c:741
@@ -1472,8 +1481,10 @@ impl FdbTsdb {
 
                         found_start_tsl = true;
                         // c: fdb_tsdb.c:745 — search the first start TSL address
-                        let mut tsl = FdbTsl::default();
-                        tsl.addr_index = self.search_start_tsl_addr(flash, start, end, from, to);
+                        let mut tsl = FdbTsl {
+                            addr_index: self.search_start_tsl_addr(flash, start, end, from, to),
+                            ..Default::default()
+                        };
 
                         // c: fdb_tsdb.c:747-760 — search all TSL
                         loop {

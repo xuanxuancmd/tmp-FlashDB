@@ -40,8 +40,8 @@ impl MockFlash {
     pub fn new(name: &'static str, sec_size: u32, max_size: u32, block_size: u32) -> Self {
         assert!(sec_size > 0, "sector size must be > 0");
         assert!(max_size > 0, "max size must be > 0");
-        assert!(max_size % sec_size == 0, "max_size must be multiple of sec_size");
-        assert!(sec_size % block_size == 0, "sec_size must be multiple of block_size");
+        assert!(max_size.is_multiple_of(sec_size), "max_size must be multiple of sec_size");
+        assert!(sec_size.is_multiple_of(block_size), "sec_size must be multiple of block_size");
         Self {
             data: vec![FDB_BYTE_ERASED; max_size as usize],
             sec_size,

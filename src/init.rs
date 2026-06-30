@@ -58,7 +58,7 @@ pub fn init_ex(
     );
 
     // c: fdb.c:89 — must align with sector size
-    if db.max_size % db.sec_size != 0 {
+    if !db.max_size.is_multiple_of(db.sec_size) {
         return Err(FdbErr::InitFailed);
     }
 

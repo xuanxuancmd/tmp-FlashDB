@@ -75,7 +75,7 @@ pub const KV_HDR_DATA_SIZE: u32 = wg_align(core::mem::size_of::<KvHdrData>() as 
 /// the status table and `magic`, and the conditional `padding` field for
 /// FDB_WRITE_GRAN == 64/128/256 (mirrored via `#[cfg(feature = ...)]`).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct SectorHdrData {
     /// c: fdb_kvdb.c:103-106 — store/dirty status tables
     pub status_table: SectorStatusTable,
@@ -111,24 +111,6 @@ impl Default for SectorStatusTable {
         Self {
             store: [FDB_BYTE_ERASED; FDB_STORE_STATUS_TABLE_SIZE],
             dirty: [FDB_BYTE_ERASED; FDB_DIRTY_STATUS_TABLE_SIZE],
-        }
-    }
-}
-
-impl Default for SectorHdrData {
-    fn default() -> Self {
-        Self {
-            status_table: SectorStatusTable::default(),
-            magic: 0,
-            combined: 0,
-            reserved: 0,
-            #[cfg(all(
-                any(feature = "gran_64", feature = "gran_128"),
-                not(feature = "gran_256")
-            ))]
-            padding: [0; 4],
-            #[cfg(feature = "gran_256")]
-            padding: [0; 20],
         }
     }
 }
@@ -316,7 +298,7 @@ impl SectorHdrData {
 
     /// Encode a sector header into a raw flash byte buffer. The buffer is pre-filled
     /// with `FDB_BYTE_ERASED` to mirror C's `memset(&sec_hdr, FDB_BYTE_ERASED, sizeof)`.
-    pub(crate) fn to_bytes(&self) -> [u8; SECTOR_HDR_SIZE] {
+    pub(crate) fn to_bytes(self) -> [u8; SECTOR_HDR_SIZE] {
         let mut buf = [FDB_BYTE_ERASED; SECTOR_HDR_SIZE];
         let store_end = SECTOR_STORE_OFFSET + FDB_STORE_STATUS_TABLE_SIZE;
         buf[SECTOR_STORE_OFFSET..store_end].copy_from_slice(&self.status_table.store);
@@ -344,7 +326,7 @@ impl KvHdrData {
     }
 
     /// Encode a KV header into a raw flash byte buffer (pre-filled with `FDB_BYTE_ERASED`).
-    pub(crate) fn to_bytes(&self) -> [u8; KV_HDR_SIZE] {
+    pub(crate) fn to_bytes(self) -> [u8; KV_HDR_SIZE] {
         let mut buf = [FDB_BYTE_ERASED; KV_HDR_SIZE];
         buf[..KV_STATUS_TABLE_SIZE].copy_from_slice(&self.status_table);
         write_u32_le(&mut buf, KV_MAGIC_OFFSET, self.magic);
@@ -666,7 +648,7 @@ impl FdbKvdb {
             return FDB_FAILED_ADDR;
         }
 
-        let addr = if pre_kv.addr_start == FDB_FAILED_ADDR {
+        if pre_kv.addr_start == FDB_FAILED_ADDR {
             // the first KV address
             sector.addr + SECTOR_HDR_DATA_SIZE
         } else if pre_kv.addr_start <= sector.addr + self.db_sec_size() {
@@ -689,10 +671,8 @@ impl FdbKvdb {
             found
         } else {
             // no KV
-            return FDB_FAILED_ADDR;
-        };
-
-        addr
+            FDB_FAILED_ADDR
+        }
     }
 
     /// c: fdb_kvdb.c:348-414 — read_kv
@@ -805,7 +785,7 @@ impl FdbKvdb {
         traversal: bool,
     ) -> Result<(), FdbErr> {
         // c: FDB_ASSERT(addr % db_sec_size(db) == 0)
-        assert!(addr % self.db_sec_size() == 0, "sector addr must be aligned");
+        assert!(addr.is_multiple_of(self.db_sec_size()), "sector addr must be aligned");
 
         #[cfg(feature = "kv_cache")]
         {
@@ -857,14 +837,13 @@ impl FdbKvdb {
                 kv_obj.addr_start = sector.addr + SECTOR_HDR_DATA_SIZE;
                 loop {
                     let _ = self.read_kv(flash, &mut kv_obj);
-                    if !kv_obj.crc_is_ok {
-                        if kv_obj.status != FdbKvStatus::PreWrite
-                            && kv_obj.status != FdbKvStatus::ErrHdr
-                        {
-                            sector.remain = 0;
-                            result = Err(FdbErr::ReadErr);
-                            break;
-                        }
+                    if !kv_obj.crc_is_ok
+                        && kv_obj.status != FdbKvStatus::PreWrite
+                        && kv_obj.status != FdbKvStatus::ErrHdr
+                    {
+                        sector.remain = 0;
+                        result = Err(FdbErr::ReadErr);
+                        break;
                     }
                     sector.empty_kv += kv_obj.len;
                     sector.remain -= kv_obj.len as usize;
@@ -1102,7 +1081,7 @@ impl FdbKvdb {
         combined_value: u32,
     ) -> Result<(), FdbErr> {
         // c: FDB_ASSERT(addr % db_sec_size(db) == 0)
-        assert!(addr % self.db_sec_size() == 0, "sector addr must be aligned");
+        assert!(addr.is_multiple_of(self.db_sec_size()), "sector addr must be aligned");
 
         flash_erase(flash, addr, self.db_sec_size())?;
 
@@ -1225,7 +1204,7 @@ impl FdbKvdb {
                 if let Some(full) = is_full.as_deref_mut() {
                     *full = true;
                 }
-            } else if let Some(full) = is_full.as_deref_mut() {
+            } else if let Some(full) = is_full {
                 *full = false;
             }
         }
@@ -1598,12 +1577,13 @@ impl FdbKvdb {
             return Err(FdbErr::KvNameErr);
         }
 
-        let mut kv_hdr = KvHdrData::default(); // memset to FDB_BYTE_ERASED
-        kv_hdr.magic = KV_MAGIC_WORD;
-        kv_hdr.name_len = key.len() as u8;
-        kv_hdr.value_len = value.len() as u32;
-        kv_hdr.len =
-            KV_HDR_DATA_SIZE + wg_align(key.len() as u32) + wg_align(value.len() as u32);
+        let mut kv_hdr = KvHdrData {
+            magic: KV_MAGIC_WORD,
+            name_len: key.len() as u8,
+            value_len: value.len() as u32,
+            len: KV_HDR_DATA_SIZE + wg_align(key.len() as u32) + wg_align(value.len() as u32),
+            ..Default::default() // memset to FDB_BYTE_ERASED
+        };
 
         if kv_hdr.len > self.db_sec_size() - SECTOR_HDR_DATA_SIZE {
             return Err(FdbErr::SavedFull);
@@ -1758,8 +1738,10 @@ impl FdbKvdb {
                 FdbSectorDirtyStatus::Gc as usize,
             );
             // search all KV
-            let mut kv = FdbKv::default();
-            kv.addr_start = sector.addr + SECTOR_HDR_DATA_SIZE;
+            let mut kv = FdbKv {
+                addr_start: sector.addr + SECTOR_HDR_DATA_SIZE,
+                ..Default::default()
+            };
             loop {
                 let _ = self.read_kv(flash, &mut kv);
                 if kv.crc_is_ok
@@ -1784,10 +1766,9 @@ impl FdbKvdb {
             if self
                 .read_sector_info(flash, prev_last, &mut last_gc_sector, true)
                 .is_ok()
+                && last_gc_sector.remain > setting_free_size
             {
-                if last_gc_sector.remain > setting_free_size {
-                    return true;
-                }
+                return true;
             }
         }
         false
@@ -1908,10 +1889,7 @@ impl FdbKvdb {
 
         if get_size > 0 && fdb_is_str(&buf[..get_size]) {
             // fdb_is_str guarantees printable ASCII (valid UTF-8)
-            match String::from_utf8(buf[..get_size].to_vec()) {
-                Ok(s) => Some(s),
-                Err(_) => None,
-            }
+            String::from_utf8(buf[..get_size].to_vec()).ok()
         } else {
             None
         }
@@ -2065,13 +2043,16 @@ impl FdbKvdb {
                 // c: change the status to error, return true (stop)
                 pre_write_addr = Some(cur_kv.addr_start);
                 true // stop iteration
-            } else if cur_kv.crc_is_ok && cur_kv.status == FdbKvStatus::Write {
+            } else {
+                // c: FDB_KV_WRITE branch — update cache (when enabled) then continue.
+                // The return value is always `false` (continue iteration), matching C's
+                // trailing `return false` after the cache side effect.
                 #[cfg(feature = "kv_cache")]
                 {
-                    write_kvs.push(cur_kv.clone());
+                    if cur_kv.crc_is_ok && cur_kv.status == FdbKvStatus::Write {
+                        write_kvs.push(cur_kv.clone());
+                    }
                 }
-                false
-            } else {
                 false
             }
         });
@@ -2162,8 +2143,10 @@ impl FdbKvdb {
                 } else {
                     node.value_len
                 };
-                let mut sector = KvdbSecInfo::default();
-                sector.empty_kv = FDB_FAILED_ADDR;
+                let mut sector = KvdbSecInfo {
+                    empty_kv: FDB_FAILED_ADDR,
+                    ..Default::default()
+                };
                 // c: create_kv_blob return is NOT assigned to result (C source behaviour)
                 let _ = self.create_kv_blob(flash, &mut sector, node.key.as_bytes(), &node.value[..value_len]);
                 // c: if (result != OK) goto __exit — checks the format result, stays OK here
@@ -2527,22 +2510,21 @@ impl FdbKvdb {
         loop {
             traversed_len += self.db_sec_size();
             result = self.read_sector_info(flash, sec_addr, &mut sector, false);
-            if result.is_ok() {
-                if sector.store == FdbSectorStoreStatus::Using
-                    || sector.store == FdbSectorStoreStatus::Full
-                {
-                    kv.addr_start = sector.addr + SECTOR_HDR_DATA_SIZE;
-                    loop {
-                        result = self.read_kv(flash, &mut kv);
-                        if result.is_err() {
-                            break;
-                        }
-                        let next = self.get_next_kv_addr(flash, &sector, &kv);
-                        if next == FDB_FAILED_ADDR {
-                            break;
-                        }
-                        kv.addr_start = next;
+            if result.is_ok()
+                && (sector.store == FdbSectorStoreStatus::Using
+                    || sector.store == FdbSectorStoreStatus::Full)
+            {
+                kv.addr_start = sector.addr + SECTOR_HDR_DATA_SIZE;
+                loop {
+                    result = self.read_kv(flash, &mut kv);
+                    if result.is_err() {
+                        break;
                     }
+                    let next = self.get_next_kv_addr(flash, &sector, &kv);
+                    if next == FDB_FAILED_ADDR {
+                        break;
+                    }
+                    kv.addr_start = next;
                 }
             }
             if result.is_err() {
