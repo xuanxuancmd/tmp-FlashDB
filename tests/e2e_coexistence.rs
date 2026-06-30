@@ -4,7 +4,7 @@
 // their own FlashDevice instance, without interference.
 
 use flashdb::{
-    blob_make, FdbDefaultKv, FdbKvdb, FdbTsdb, FlashDevice, MockFlash,
+    blob_make, FdbDefaultKv, FdbKvdb, FdbTsdb, MockFlash,
 };
 
 fn get_time_zero() -> flashdb::FdbTime {
