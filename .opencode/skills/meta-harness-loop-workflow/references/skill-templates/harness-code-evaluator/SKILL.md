@@ -1,3 +1,12 @@
+# 评估编排 Skill 模板
+
+> 生成 harness-code-evaluator Skill 时，按此模板填充。
+> 此 Skill 教 workflow 的 Maker 如何调用 evaluator agent、如何消费报告、如何控制重试循环。
+> `{target_lang}` 影响 prompt 中的构建命令提示。
+
+---
+
+```markdown
 ---
 name: harness-code-evaluator
 description: >-
@@ -10,7 +19,7 @@ description: >-
 
 ## 职责
 
-指导主 Agent 完成「评估 → 修复」循环：调用 evaluator agent → 读取报告 → 提取问题 → 修复 → 重新评估（最多 5 次）。
+指导主 Agent 完成「评估 → 修复」循环：调用 evaluator agent → 读取报告 → 提取问题 → 修复 → 重新评估（最多 3 次）。
 
 ---
 
@@ -26,7 +35,7 @@ description: >-
 
 - **Plan 文件场景**：Plan 文件已生成且路径正确
 - **文本场景**：从上下文提取的原始需求足够清晰
-- **通用**：代码已完成 `cargo check`（避免将编译失败带入评估）
+- **通用**：代码已完成 `{build_cmd}`（避免将编译失败带入评估）
 
 ---
 
@@ -56,11 +65,11 @@ current_retry = 0
 │      ├─ YES → 停止重试，设 status=blocked（见"终止处理"） │
 │      └─ NO  → current_retry += 1                        │
 │                                                         │
-│  task(subagent_type="code-evaluator-agent")            │
+│  task(subagent_type="code-evaluator-agent")           │
 │      ↓                                                  │
 │  等待返回报告路径                                        │
 │      ↓                                                  │
-│  Read(.opencode/harness/evidence/code-evaluator-agent-review.json) │
+│  Read({evidence_dir}/code-evaluator-agent-review.json)│
 │      → overall_result.pass?                             │
 │      ├─ YES → 审查通过 ✅ 退出循环                       │
 │      └─ NO  → Read(blocking_issues[])                   │
@@ -98,7 +107,7 @@ current_retry = 0
 
 ## 报告消费指南
 
-### 入口：`.opencode/harness/evidence/code-evaluator-agent-review.json`
+### 入口：`{evidence_dir}/code-evaluator-agent-review.json`
 
 | 文件 | 用途 |
 |------|------|
@@ -123,7 +132,11 @@ current_retry = 0
 
 | target_lang | 编译验证 | 测试验证 |
 |-------------|---------|---------|
-| rust | `cargo check [-p {package}]` | `cargo test [-p {package}]` |
+| rust | `{build_cmd} [-p {package}]` | `{test_cmd} [-p {package}]` |
+| nodejs | `{build_cmd}` | `{test_cmd}` |
+| python | `{build_cmd}` | `{test_cmd}` |
+| go | `{build_cmd}` | `{test_cmd}` |
+| java | `{build_cmd}` | `{test_cmd}` |
 
 > 编译/测试未通过前不要重新调用 evaluator（避免将编译失败带入评估）。
 
@@ -147,3 +160,25 @@ current_retry = 0
 3. ✅ 修复后必须重新调用 evaluator 验证
 4. ✅ 每次循环前完整读取 JSON 报告，不凭记忆
 5. ✅ 5 次失败后设 `status=blocked`：阻断问题、非阻断问题、报告路径写入 evidence
+```
+
+---
+
+## 模板变量说明
+
+| 变量 | 来源 | 示例值 |
+|------|------|--------|
+| `{skill_name}` | 用户输入或自动 | `harness-dev-workflow` |
+| `{target_lang}` | Step 0.5 | `rust` |
+| `{build_cmd}` | Step 0.5 | `cargo check` |
+| `{test_cmd}` | Step 0.5 | `cargo test` |
+| `{evidence_dir}` | 用户输入或默认 | `.opencode/harness/evidence` |
+| `{package}` | 运行时参数 | `connect-runtime` |
+| `{plan_path}` | 运行时参数 | `.sisyphus/plans/runtime-plan.md` |
+
+## 生成规则
+
+1. 写入 `.opencode/skills/harness-code-evaluator/SKILL.md`（OpenCode）或对应 Claude Code 路径
+2. 模板 `task()` 调用中的 `subagent_type` 必须固定为 `"code-evaluator-agent"`
+3. 编译/测试命令表从 Step 0.5 推断
+4. 总行数建议 80-120 行
