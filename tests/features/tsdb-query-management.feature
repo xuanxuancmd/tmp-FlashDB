@@ -54,6 +54,11 @@ Feature: TSDB 时序数据查询与管理
     And db 的 last_time 为 0
     And 后续调用 fdb_tsl_iter 不产出任何 TSL
 
+  Scenario: 清空后首条 TSL 时间戳只需大于 0
+    Given 刚调用过 fdb_tsl_clean，last_time 为 0
+    When 调用 fdb_tsl_append_with_ts(db, blob, 1) 追加
+    Then 返回值等于 FDB_NO_ERR
+
   Scenario: 空数据库正向遍历不调用回调
     Given 数据库为空（所有扇区为 EMPTY）
     When 调用 fdb_tsl_iter(db, cb, arg)

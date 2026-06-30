@@ -96,9 +96,15 @@ async fn tsdb_init_with_maxlen(world: &mut FlashWorld, name: String, path: Strin
 
 #[when(regex = r#"^调用 fdb_tsdb_init 初始化$"#)]
 async fn tsdb_init_bare(world: &mut FlashWorld) {
+    // Preserve pre-init configuration (e.g. not_formatable) set by prior Given
+    // steps — `FdbTsdb::default()` would otherwise reset it to false.
+    let not_formatable = world.tsdb.parent.not_formatable;
     world.tsdb = flashdb::FdbTsdb::default();
     world.tsdb.set_sec_size(4096);
     world.tsdb.parent.max_size = 16384;
+    if not_formatable {
+        world.tsdb.set_not_formatable(true);
+    }
     set_get_time(0);
     let flash = flash_mut!(world);
     let result = world
@@ -220,9 +226,18 @@ async fn append_after_full(world: &mut FlashWorld) {
     let blob = blob_make(&mut buf);
     let mut _iter = 0u32;
     loop {
+        // Advance get_time BEFORE each append: tsl_append uses the get_time
+        // callback and rejects cur_time <= last_time. The first append would
+        // otherwise see get_time=0 == last_time=0 → WriteErr.
+        set_get_time(world.tsdb.last_time + 1);
         let flash = flash_mut!(world);
         match world.tsdb.tsl_append(flash, &blob) {
-            Ok(()) => { _iter += 1; if _iter > 500 { break; } set_get_time(world.tsdb.last_time + 1); }
+            Ok(()) => {
+                _iter += 1;
+                if _iter > 500 {
+                    break;
+                }
+            }
             Err(FdbErr::SavedFull) => break,
             Err(e) => panic!("unexpected error: {:?}", e),
         }
@@ -317,16 +332,22 @@ async fn assert_failed(world: &mut FlashWorld) {
 
 #[given(regex = r#"^Flash 分区中有 (\d+) 个扇区状态均为 USING$"#)]
 async fn tsdb_sectors_using(world: &mut FlashWorld, count: usize) {
-    // Create flash, init TSDB (formats sectors to EMPTY), then manually
-    // set sector store status to USING for `count` sectors.
+    // Create flash, init TSDB (formats sectors to EMPTY), then set sector
+    // store status to USING for `count` sectors via the proper status encoder
+    // (c: _FDB_WRITE_STATUS with FDB_SECTOR_STORE_USING). A raw 0x00 byte would
+    // encode FDB_SECTOR_STORE_FULL (all bits cleared), not USING.
     world.setup_tsdb(4096, 16384, 256);
-    // Corrupt sector store status to USING.
-    let flash = flash_mut!(world);
     for i in 0..count {
         let addr = (i * 4096) as u32;
-        // Write USING status (value 2) to the store status table.
-        // For GRAN==1, store status table is 1 byte at sector start.
-        let _ = flash.write(addr, &[0x00]); // 0xFF → 0x00 means status index > 0
+        let mut status_table = [0u8; 4];
+        let flash = flash_mut!(world);
+        let _ = flashdb::write_status(
+            flash,
+            addr,
+            &mut status_table,
+            flashdb::FDB_SECTOR_STORE_STATUS_NUM as usize,
+            flashdb::FdbSectorStoreStatus::Using as usize,
+        );
     }
     // Reset tsdb for re-init.
     world.tsdb = flashdb::FdbTsdb::default();
@@ -502,15 +523,35 @@ async fn current_sector_not_last(_world: &mut FlashWorld) {
 
 #[given(regex = r#"^当前使用最后一个扇区且空间不足$"#)]
 async fn last_sector_low_space(world: &mut FlashWorld) {
-    // Fill all sectors except the last, then fill the last nearly full.
-    let mut _iter = 0u32;
+    // Fill sectors until the last sector is USING with insufficient space for
+    // one more TSL. With rollover=true the fill would otherwise loop forever
+    // (each sector switch rolls forward), so we detect "last sector nearly
+    // full" by comparing `remain` against the per-TSL size (measured from the
+    // first successful append) and stop BEFORE the rollover append.
+    let last_sec_addr = world.tsdb.parent.max_size - world.tsdb.parent.sec_size;
+    let mut tsl_size: usize = 0;
     loop {
+        // Stop once we are on the last sector without room for one more TSL.
+        if tsl_size > 0
+            && world.tsdb.cur_sec.addr == last_sec_addr
+            && world.tsdb.cur_sec.remain < tsl_size
+        {
+            break;
+        }
         let mut buf = make_blob_buf(64);
         let blob = blob_make(&mut buf);
         set_get_time(world.tsdb.last_time + 1);
+        let old_addr = world.tsdb.cur_sec.addr;
+        let old_remain = world.tsdb.cur_sec.remain;
         let flash = flash_mut!(world);
         match world.tsdb.tsl_append(flash, &blob) {
-            Ok(()) => { _iter += 1; if _iter > 500 { break; } continue; }
+            Ok(()) => {
+                // Measure per-TSL cost from a same-sector append.
+                if tsl_size == 0 && world.tsdb.cur_sec.addr == old_addr {
+                    tsl_size = old_remain - world.tsdb.cur_sec.remain;
+                }
+                continue;
+            }
             Err(FdbErr::SavedFull) => break,
             Err(e) => panic!("unexpected error filling: {:?}", e),
         }
@@ -567,23 +608,35 @@ async fn given_rollover(world: &mut FlashWorld, value: String) {
 
 #[given(regex = r#"^上次运行时 TSL 索引写入后（PRE_WRITE 状态）掉电$"#)]
 async fn tsl_pre_write_power_loss(world: &mut FlashWorld) {
-    // Init, append a TSL, then corrupt its status to PreWrite.
-    let mut buf = make_blob_buf(64);
-    let blob = blob_make(&mut buf);
-    set_get_time(100);
+    // Simulate power loss after a TSL index header was written (PreWrite
+    // status) but before the status was advanced to Write. On NOR flash we
+    // cannot revert a Write status (0x3f) back to PreWrite (0x7f) — that would
+    // require setting a bit. So we build the PreWrite TSL from erased flash:
+    // init formats the sector to Empty, we advance it to Using, then write
+    // only the PreWrite status byte at the first TSL index slot. read_tsl
+    // treats PreWrite as unused (time=0, log_len=max_len) regardless of the
+    // stored index fields, so no index payload is needed.
+    world.setup_tsdb(4096, 16384, 256);
+    // The first TSL index lives at sector_addr + SECTOR_HDR_DATA_SIZE, which
+    // equals cur_sec.empty_idx right after init (Empty sector, no TSLs yet).
+    let tsl_addr = world.tsdb.cur_sec.empty_idx;
+    // Advance sector 0 from Empty to Using (NOR: 0x7f & 0x3f = 0x3f).
+    let mut sec_status = [0u8; 4];
     let flash = flash_mut!(world);
-    let _ = world.tsdb.tsl_append(flash, &blob);
-    // The TSL is at the current sector's start. Corrupt its status to PreWrite.
-    // TSL index starts at sector_addr + SECTOR_HDR_DATA_SIZE.
-    // For simplicity, write status PreWrite (index 1) at the first TSL index.
-    // We use the public write_status function.
-    let tsl_addr = world.tsdb.cur_sec.addr + 64; // approximate: SECTOR_HDR_DATA_SIZE for GRAN==1
-    let mut status_table = [0u8; 4];
+    let _ = flashdb::write_status(
+        flash,
+        0,
+        &mut sec_status,
+        flashdb::FDB_SECTOR_STORE_STATUS_NUM as usize,
+        flashdb::FdbSectorStoreStatus::Using as usize,
+    );
+    // Write PreWrite status at the TSL index slot (NOR: 0xFF & 0x7f = 0x7f).
+    let mut tsl_status = [0u8; 4];
     let flash = flash_mut!(world);
     let _ = flashdb::write_status(
         flash,
         tsl_addr,
-        &mut status_table,
+        &mut tsl_status,
         flashdb::FDB_TSL_STATUS_NUM as usize,
         FdbTslStatus::PreWrite as usize,
     );
@@ -595,18 +648,25 @@ async fn tsl_pre_write_power_loss(world: &mut FlashWorld) {
 
 #[then(regex = r#"^遍历该扇区时中断的 TSL 被视为 UNUSED（time 为 0，log_len 为 max_len）$"#)]
 async fn pre_write_tsl_unused(world: &mut FlashWorld) {
-    // Iterate and verify the PreWrite TSL is treated as Unused.
-    let mut found_unused = false;
+    // c: fdb_tsdb.c:154-157 — read_tsl treats PreWrite (and Unused) TSLs as
+    // unused: time=0, log_len=max_len, addr_log=FDB_DATA_UNUSED.  The feature
+    // describes this as "视为 UNUSED（time 为 0，log_len 为 max_len）", so we
+    // verify those properties rather than the literal status enum (which stays
+    // PreWrite after read_tsl).
+    let max_len = world.tsdb.max_len as u32;
+    let mut found = false;
     let flash = flash_mut!(world);
     world.tsdb.tsl_iter(flash, |tsl| {
-        if tsl.status == FdbTslStatus::Unused {
-            found_unused = true;
+        if tsl.time == 0 && tsl.log_len == max_len {
+            found = true;
         }
         false
     });
     assert!(
-        found_unused,
-        "expected a PreWrite TSL to be treated as Unused"
+        found,
+        "expected the interrupted (PreWrite) TSL to be treated as unused \
+         (time=0, log_len=max_len={})",
+        max_len
     );
 }
 
@@ -841,9 +901,28 @@ async fn callback_only_using_full(world: &mut FlashWorld) {
 // ======================================================================
 
 #[given(regex = r#"^时间范围 \[100, 500\] 内有 (\d+) 条 TSL 状态为 FDB_TSL_WRITE$"#)]
-async fn range_has_write_tsls(world: &mut FlashWorld, _count: usize) {
-    // The background already added 5 TSLs with status Write.
-    // Optionally set some to Deleted.
+async fn range_has_write_tsls(world: &mut FlashWorld, count: usize) {
+    // The background added 5 TSLs (timestamps 100..500) with Write status.
+    // Set (5 - count) of them to Deleted so exactly `count` remain Write in
+    // the [100, 500] range.
+    let to_delete = 5usize.saturating_sub(count);
+    // Collect current Write TSLs (tsl_iter visits oldest→newest).
+    let mut targets: Vec<FdbTsl> = Vec::new();
+    {
+        let flash = flash_mut!(world);
+        world.tsdb.tsl_iter(flash, |tsl| {
+            if tsl.status == FdbTslStatus::Write {
+                targets.push(*tsl);
+            }
+            false
+        });
+    }
+    for tsl in targets.iter().take(to_delete) {
+        let flash = flash_mut!(world);
+        let _ = world
+            .tsdb
+            .tsl_set_status(flash, tsl, FdbTslStatus::Deleted);
+    }
 }
 
 #[when(regex = r#"^调用 fdb_tsl_query_count\(db, (\d+), (\d+), FDB_TSL_WRITE\)$"#)]

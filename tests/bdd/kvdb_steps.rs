@@ -174,7 +174,14 @@ async fn some_sector_magic_corrupted(world: &mut FlashWorld) {
 
 #[given(regex = r#"^not_formatable 为 (true|false)$"#)]
 async fn set_not_formatable(world: &mut FlashWorld, value: String) {
-    world.kvdb.set_not_format(value == "true");
+    let v = value == "true";
+    // The flag lives on `parent: FdbDb`. KVDB and TSDB keep separate parents,
+    // so set it on whichever database(s) are present. Both setters assert
+    // `!init_ok`, which holds because this Given always runs before init.
+    world.kvdb.set_not_format(v);
+    if !world.tsdb.parent.init_ok {
+        world.tsdb.set_not_formatable(v);
+    }
 }
 
 // ======================================================================

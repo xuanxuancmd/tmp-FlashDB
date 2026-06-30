@@ -217,7 +217,12 @@ impl FlashWorld {
 
 #[tokio::main]
 async fn main() {
+    // c: note — cucumber-rs runs scenarios CONCURRENTLY by default (up to 64).
+    // Our `FdbGetTime` callback bridges through a global atomic because the
+    // `fn() -> FdbTime` pointer cannot capture per-World state.  Concurrent
+    // execution would race on that atomic, so we force sequential execution.
     FlashWorld::cucumber()
+        .max_concurrent_scenarios(1)
         .run_and_exit("tests/features")
         .await;
 }
