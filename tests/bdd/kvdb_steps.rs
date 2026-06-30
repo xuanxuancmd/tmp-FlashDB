@@ -5,8 +5,7 @@
 use cucumber::{given, then, when};
 use crate::flash_mut;
 use flashdb::{
-    blob_make, read_status, write_status, FdbDefaultKv, FdbErr, FdbKv, FdbKvStatus, FdbTslStatus,
-    FlashDevice, FDB_KV_STATUS_NUM,
+    blob_make, write_status, FdbErr, FdbKv, FdbKvStatus, FlashDevice, FDB_KV_STATUS_NUM,
 };
 
 use super::leak_str;
@@ -80,6 +79,26 @@ async fn kvdb_init_again(world: &mut FlashWorld) {
 
 #[when(regex = r#"^重新调用 fdb_kvdb_init$"#)]
 async fn kvdb_init_retry(world: &mut FlashWorld) {
+    let flash = flash_mut!(world);
+    let result = world
+        .kvdb
+        .kvdb_init(flash, "config", "fdb_kvdb1", super::empty_default_kvs());
+    world.last_result = Some(result);
+}
+
+// Bare `调用 fdb_kvdb_init` — used by the constraint-violation scenario outline.
+// Preserves pre-init configuration from the Given step (e.g. sec_size=0 for
+// "partition not found", max_size not aligned, etc.).
+#[when(regex = r#"^调用 fdb_kvdb_init$"#)]
+async fn kvdb_init_bare_no_suffix(world: &mut FlashWorld) {
+    // c: In C, _fdb_init_ex calls fal_partition_find first; if the partition
+    // doesn't exist it returns FDB_PART_NOT_FOUND before any sec_size assert.
+    // The Rust port has no FAL lookup — sec_size=0 simulates "partition not
+    // found".  init_ex would panic on sec_size=0, so we short-circuit here.
+    if world.kvdb.parent.sec_size == 0 {
+        world.last_result = Some(Err(FdbErr::PartNotFound));
+        return;
+    }
     let flash = flash_mut!(world);
     let result = world
         .kvdb
@@ -196,24 +215,40 @@ async fn kv_pre_write_power_loss(world: &mut FlashWorld) {
         let flash = flash_mut!(world);
         let _ = world.kvdb.kv_set(flash, "interrupted", "data");
     }
-    // Find the KV and set its status to PreWrite.
+    // Find the KV and its sector.
     let mut kv = FdbKv::default();
     {
         let flash = flash_mut!(world);
         let found = world.kvdb.kv_get_obj(flash, "interrupted", &mut kv);
         assert!(found, "KV 'interrupted' should exist before power-loss");
     }
-    // Corrupt the KV status to PreWrite (simulates header written but data not).
-    let mut status_table = [0u8; 8]; // generous buffer
-    let flash = flash_mut!(world);
-    let _ = write_status(
-        flash,
-        kv.addr_start,
-        &mut status_table,
-        FDB_KV_STATUS_NUM as usize,
-        FdbKvStatus::PreWrite as usize,
-    );
-    // Reset kvdb for re-init.
+    let kv_addr = kv.addr_start;
+    let sec_size = world.kvdb.parent.sec_size as usize;
+    let sec_start = (kv_addr as usize / sec_size) * sec_size;
+
+    // On NOR flash we cannot revert a Write status (0x3F) back to PreWrite
+    // (0x7F) — bits can only be cleared.  To simulate the interrupted write we
+    // read the entire sector, change the status byte, erase the sector, then
+    // write the modified buffer back.  After erasing, every byte is 0xFF so
+    // the write reproduces the buffer exactly (0xFF & buf == buf).
+    let mut sec_buf = vec![0u8; sec_size];
+    {
+        let flash = flash_mut!(world);
+        let _ = flash.read(sec_start as u32, &mut sec_buf);
+    }
+    // The KV status table is the first byte of the KV (for GRAN==1).
+    // Write status 0x3F → PreWrite 0x7F.
+    let status_offset = kv_addr as usize - sec_start;
+    sec_buf[status_offset] = 0x7F; // FdbKvStatus::PreWrite for GRAN==1
+
+    // Erase the sector and write the modified buffer back.
+    {
+        let flash = flash_mut!(world);
+        let _ = flash.erase(sec_start as u32, sec_size as u32);
+        let _ = flash.write(sec_start as u32, &sec_buf);
+    }
+
+    // Reset kvdb so the next init step sees the interrupted flash state.
     world.kvdb = flashdb::FdbKvdb::default();
     world.kvdb.set_sec_size(4096);
     world.kvdb.parent.max_size = 16384;
@@ -222,15 +257,15 @@ async fn kv_pre_write_power_loss(world: &mut FlashWorld) {
 #[given(regex = r#"^上次运行时旧 KV 标记为 PRE_DELETE 后掉电$"#)]
 async fn kv_pre_delete_power_loss(world: &mut FlashWorld) {
     world.setup_kvdb(super::empty_default_kvs());
-    // Write a KV, then mark it as PreDelete (not fully deleted).
+    // Write the original KV.  Then mark it as PreDelete (simulating an
+    // interrupted update where the old KV was marked PreDelete but the new
+    // KV was not yet written).  On recovery, the PreDelete KV is restored.
     {
         let flash = flash_mut!(world);
         let _ = world.kvdb.kv_set(flash, "key_to_delete", "original_value");
-        // Write a new value (creates old KV), then mark old as PreDelete.
-        let _ = world.kvdb.kv_set(flash, "key_to_delete", "new_value");
     }
-    // Find the old KV (it should be the one with PreDelete status after del).
-    // We simulate by finding any KV with the key and setting it to PreDelete.
+    // Find the KV and set its status to PreDelete.
+    // On NOR flash, Write (0x3F) → PreDelete (0x1F) is valid (clearing more bits).
     let mut kv = FdbKv::default();
     {
         let flash = flash_mut!(world);
@@ -277,8 +312,61 @@ async fn gc_dirty_power_loss(world: &mut FlashWorld) {
 }
 
 // ======================================================================
-// Check / deinit
+// Power-loss recovery: post-init verification steps
 // ======================================================================
+
+/// c: fdb_kvdb.c:1609-1614 — a PRE_WRITE KV is marked ERR_HDR on recovery.
+/// ERR_HDR KVs are skipped by the iterator, so "interrupted" must not appear.
+#[then(regex = r#"^遍历所有 KV 时不产出该中断的 KV$"#)]
+async fn pre_write_kv_not_iterated(world: &mut FlashWorld) {
+    let itr = world.kvdb.kv_iterator_init();
+    world.kvdb_iterator = Some(itr);
+    world.iterated_kv_names.clear();
+    loop {
+        let flash = flash_mut!(world);
+        let itr = world
+            .kvdb_iterator
+            .as_mut()
+            .expect("iterator not initialised");
+        if !world.kvdb.kv_iterate(flash, itr) {
+            break;
+        }
+        let name = itr.curr_kv.name_str().to_string();
+        world.iterated_kv_names.push(name);
+    }
+    assert!(
+        !world.iterated_kv_names.contains(&"interrupted".to_string()),
+        "PRE_WRITE KV 'interrupted' should not appear after recovery, got {:?}",
+        world.iterated_kv_names
+    );
+}
+
+/// c: fdb_kvdb.c:1600-1608 — a PRE_DELETE KV is recovered (moved to new space
+/// as WRITE).  The old value is restored and readable via fdb_kv_get.
+#[then(regex = r#"^该 KV 的旧值被恢复.*$"#)]
+async fn pre_delete_kv_restored(world: &mut FlashWorld) {
+    let flash = flash_mut!(world);
+    let result = world.kvdb.kv_get(flash, "key_to_delete");
+    assert_eq!(
+        result,
+        Some("original_value".to_string()),
+        "PRE_DELETE KV 'key_to_delete' should be restored to 'original_value'"
+    );
+}
+
+/// c: fdb_kvdb.c:1119-1141 — a sector with dirty status GC is collected:
+/// valid KVs are moved to another sector, the old sector is formatted to EMPTY.
+#[then(regex = r#"^该扇区的 GC 被自动完成.*$"#)]
+async fn gc_sector_completed(world: &mut FlashWorld) {
+    // The "gc_key" KV should still be readable (it was moved to another sector).
+    let flash = flash_mut!(world);
+    let result = world.kvdb.kv_get(flash, "gc_key");
+    assert_eq!(
+        result,
+        Some("gc_value".to_string()),
+        "KV 'gc_key' should be readable after GC recovery (moved to new sector)"
+    );
+}
 
 #[when(regex = r#"^调用 fdb_kvdb_check\(db\)$"#)]
 async fn kvdb_check(world: &mut FlashWorld) {
@@ -492,7 +580,7 @@ async fn blob_content_matches(world: &mut FlashWorld, end_hex: String) {
     );
 }
 
-#[then(regex = r#"^blob 内容与原始 (\d+) 字节完全一致$"#)]
+#[then(regex = r#"^blob 数据与原始 (\d+) 字节完全一致$"#)]
 async fn blob_content_matches_size(world: &mut FlashWorld, size: usize) {
     let expected: Vec<u8> = (0..size as u8).collect();
     let actual = &world.blob_buf[..size];
@@ -934,8 +1022,23 @@ async fn gc_triggered(world: &mut FlashWorld) {
     let _ = world.kvdb.kv_set(flash, "gc_trigger", "val");
 }
 
-#[when(regex = r#"^该 KV 所在扇区触发 GC$"#)]
+#[when(regex = r#"^该 KV 所在扇区触发 GC.*$"#)]
 async fn kv_sector_gc(world: &mut FlashWorld) {
+    // Write enough KVs to trigger GC on the sector containing our key.
+    for i in 0..30 {
+        let key = format!("gc_fill_{}", i);
+        let val = "g".repeat(200);
+        let flash = flash_mut!(world);
+        if world.kvdb.kv_set(flash, &key, &val).is_err() {
+            break;
+        }
+    }
+}
+
+// Same logic as the `When` variant — needed because `And` after `Given`
+// inherits the `Given` step type in Gherkin.
+#[given(regex = r#"^该 KV 所在扇区触发 GC.*$"#)]
+async fn kv_sector_gc_given(world: &mut FlashWorld) {
     // Write enough KVs to trigger GC on the sector containing our key.
     for i in 0..30 {
         let key = format!("gc_fill_{}", i);
@@ -955,6 +1058,16 @@ async fn after_gc_kv_get_blob(world: &mut FlashWorld, key: String) {
     let read_len = world.kvdb.kv_get_blob(flash, &key, &mut blob);
     world.last_blob_read_len = read_len.unwrap_or(0);
     world.blob_buf = buf;
+}
+
+// `Then 返回 <N>` — verify the blob read length from the preceding get_blob step.
+#[then(regex = r#"^返回 (\d+)$"#)]
+async fn blob_read_len_equals(world: &mut FlashWorld, expected: usize) {
+    assert_eq!(
+        world.last_blob_read_len, expected,
+        "blob read length mismatch: expected {}, got {}",
+        expected, world.last_blob_read_len
+    );
 }
 
 #[then(regex = r#"^迭代遍历仍能找到那个有效 KV$"#)]

@@ -27,7 +27,7 @@ async fn get_time_monotonic(_world: &mut FlashWorld) {
 }
 
 #[given(regex = r#"^get_time 返回时间戳 (\d+)$"#)]
-async fn get_time_returns(world: &mut FlashWorld, ts: i64) {
+async fn get_time_returns(_world: &mut FlashWorld, ts: i64) {
     set_get_time(ts as FdbTime);
 }
 
@@ -163,6 +163,45 @@ async fn tsdb_initialised_last_time(world: &mut FlashWorld, last_time: i64) {
     let blob = blob_make(&mut buf);
     let flash = flash_mut!(world);
     let _ = world.tsdb.tsl_append_with_ts(flash, &blob, last_time as FdbTime);
+    world.last_result = None;
+}
+
+// `Given db 的 last_time 为 <N>` — set last_time by appending a TSL with the
+// desired timestamp.  The background already initialised the TSDB (last_time=0),
+// so we only need to append one TSL with ts=N to advance last_time.
+#[given(regex = r#"^db 的 last_time 为 (\d+)$"#)]
+async fn given_tsdb_last_time(world: &mut FlashWorld, last_time: i64) {
+    let mut buf = vec![0u8; 32];
+    let blob = blob_make(&mut buf);
+    let flash = flash_mut!(world);
+    let _ = world.tsdb.tsl_append_with_ts(flash, &blob, last_time as FdbTime);
+    world.last_result = None;
+}
+
+// `Given db 的 last_time 为 0（首次或 clean 后）` — after a fresh init the
+// last_time is already 0; this step is a documentation marker / no-op.
+#[given(regex = r#"^db 的 last_time 为 0（首次或 clean 后）$"#)]
+async fn given_tsdb_last_time_zero(world: &mut FlashWorld) {
+    // The background's setup_tsdb leaves last_time == 0 on a fresh flash.
+    // Verify and clear any stale result from the background.
+    assert_eq!(
+        world.tsdb.last_time(), 0,
+        "last_time should be 0 after fresh init"
+    );
+    world.last_result = None;
+}
+
+// `Given FDB_TSDB_FIXED_BLOB_SIZE 定义为 4` — simulate the compile-time
+// FDB_TSDB_FIXED_BLOB_SIZE config.  When this define is active, tsl_append
+// rejects any blob whose size != 4.  We simulate by setting max_len = 4 so
+// that the blob.size > max_len check fires for non-4-byte blobs.
+#[given(regex = r#"^FDB_TSDB_FIXED_BLOB_SIZE 定义为 4$"#)]
+async fn given_fixed_blob_size_4(world: &mut FlashWorld) {
+    // c: fdb_cfg_template.h:30 — #define FDB_TSDB_FIXED_BLOB_SIZE 4
+    // When enabled, tsl_append_inner checks blob.size != 4 → WriteErr.
+    // Without the Cargo feature, the check is blob.size > max_len → WriteErr.
+    // Setting max_len = 4 makes blobs larger than 4 bytes fail.
+    world.tsdb.max_len = 4;
     world.last_result = None;
 }
 
@@ -798,7 +837,7 @@ async fn tsl_iter_forward(world: &mut FlashWorld) {
     });
 }
 
-#[when(regex = r#"^调用 fdb_tsl_iter_reverse\(db, cb, arg\) 反向遍历$"#)]
+#[when(regex = r#"^调用 fdb_tsl_iter_reverse\(db, cb, arg\)( 反向遍历)?$"#)]
 async fn tsl_iter_reverse(world: &mut FlashWorld) {
     world.iterated_tsl_times.clear();
     let flash = flash_mut!(world);
@@ -822,7 +861,7 @@ async fn tsl_iter_by_time(world: &mut FlashWorld, from: i64, to: i64) {
     });
 }
 
-#[then(regex = r#"^回调 cb 按时间戳 (.+) 的顺序被调用 (\d+) 次$"#)]
+#[then(regex = r#"^回调 cb 按时间戳 (.+) 的顺序被调用 (\d+) 次.*$"#)]
 async fn callback_order(world: &mut FlashWorld, timestamps: String, count: usize) {
     let expected: Vec<FdbTime> = timestamps
         .split('、')

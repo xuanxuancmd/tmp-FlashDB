@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use cucumber::World;
 use flashdb::{
-    FdbDefaultKv, FdbDefaultKvNode, FdbErr, FdbKvIterator, FdbKvdb, FdbTsdb, FdbTime, FlashDevice,
+    FdbDefaultKv, FdbDefaultKvNode, FdbErr, FdbKvIterator, FdbKvdb, FdbTsdb, FdbTime,
 };
 use flashdb::mock_flash::MockFlash;
 
