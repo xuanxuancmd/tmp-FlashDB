@@ -13,9 +13,9 @@ pub mod tsdb;
 pub mod mock_flash;
 
 pub use def::{
-    FdbBlob, FdbDb, FdbDbType, FdbDefaultKv, FdbDefaultKvNode, FdbErr, FdbKv, FdbKvIterator,
-    FdbKvStatus, FdbSectorDirtyStatus, FdbSectorStoreStatus, FdbTsl, FdbTslStatus, FdbTime,
-    FdbTsdb, FdbKvdb, KvCacheNode, KvdbSecInfo, TsdbSecInfo,
+    FdbBlob, FdbDb, FdbDbType, FdbDefaultKv, FdbDefaultKvNode, FdbErr, FdbGetTime, FdbKv,
+    FdbKvIterator, FdbKvStatus, FdbSectorDirtyStatus, FdbSectorStoreStatus, FdbTsl, FdbTslStatus,
+    FdbTime, FdbTsdb, FdbKvdb, KvCacheNode, KvdbSecInfo, TsdbSecInfo,
 };
 pub use flash_trait::FlashDevice;
 pub use init::{db_path, deinit, init_ex, init_finish};

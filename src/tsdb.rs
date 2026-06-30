@@ -16,8 +16,8 @@ use crate::def::{
 use crate::flash_trait::FlashDevice;
 use crate::init::{init_ex, init_finish, deinit as db_deinit};
 use crate::low_lvl::{
-    align_down, flash_erase, flash_read, flash_write, flash_write_align, get_status, read_status,
-    set_status, status_table_size, wg_align, wg_align_down, write_status,
+    align_down, align_up, flash_erase, flash_read, flash_write, flash_write_align, get_status,
+    status_table_size, wg_align, write_status,
 };
 
 // ==========================================================================
@@ -1230,7 +1230,366 @@ impl FdbTsdb {
     }
 
     // ===== T17: Iter / query / set_status =====
-    // (Implemented in T17)
+
+    /// c: fdb_tsdb.c:556-597 — fdb_tsl_iter
+    ///
+    /// Iterate all TSLs in forward order (oldest to newest). The callback
+    /// receives each TSL; returning `true` stops the iteration.
+    ///
+    /// NOTE: The C code calls `db_lock`/`db_unlock` here. In Rust, `&self`
+    /// methods cannot invoke the `&mut self` lock callbacks. The caller is
+    /// responsible for synchronization in multi-threaded environments.
+    pub fn tsl_iter<F: FlashDevice>(
+        &self,
+        flash: &F,
+        mut cb: impl FnMut(&FdbTsl) -> bool,
+    ) {
+        // c: fdb_tsdb.c:562-564
+        if !self.parent.init_ok {
+            return;
+        }
+
+        let mut sec_addr = self.parent.oldest_addr;
+        let mut traversed_len = 0u32;
+
+        loop {
+            // c: fdb_tsdb.c:574
+            traversed_len += self.parent.sec_size;
+            let mut sector = TsdbSecInfo::default();
+            // c: fdb_tsdb.c:575-577 — read_sector_info (continue on error)
+            if self.read_sector_info(flash, sec_addr, &mut sector, false).is_ok() {
+                // c: fdb_tsdb.c:579 — sector has TSL
+                if sector.status == FdbSectorStoreStatus::Using
+                    || sector.status == FdbSectorStoreStatus::Full
+                {
+                    // c: fdb_tsdb.c:580-583 — copy cur_sec for USING sector
+                    if sector.status == FdbSectorStoreStatus::Using {
+                        sector = self.cur_sec.clone();
+                    }
+                    // c: fdb_tsdb.c:584
+                    let mut tsl = FdbTsl::default();
+                    tsl.addr_index = sector.addr + SECTOR_HDR_DATA_SIZE as u32;
+                    // c: fdb_tsdb.c:586-593 — search all TSL
+                    loop {
+                        self.read_tsl(flash, &mut tsl);
+                        if cb(&tsl) {
+                            return; // c: callback returned true → stop
+                        }
+                        let next = FdbTsdb::get_next_tsl_addr(&sector, &tsl);
+                        if next == FAILED_ADDR {
+                            break;
+                        }
+                        tsl.addr_index = next;
+                    }
+                }
+            }
+            // c: fdb_tsdb.c:595 — get_next_sector_addr
+            let next = self.get_next_sector_addr(&sector, traversed_len);
+            if next == FAILED_ADDR {
+                break;
+            }
+            sec_addr = next;
+        }
+    }
+
+    /// c: fdb_tsdb.c:606-649 — fdb_tsl_iter_reverse
+    ///
+    /// Iterate all TSLs in reverse order (newest to oldest). The callback
+    /// receives each TSL; returning `true` stops the iteration.
+    pub fn tsl_iter_reverse<F: FlashDevice>(
+        &self,
+        flash: &F,
+        mut cb: impl FnMut(&FdbTsl) -> bool,
+    ) {
+        // c: fdb_tsdb.c:612-614
+        if !self.parent.init_ok {
+            return;
+        }
+
+        let mut sec_addr = self.cur_sec.addr;
+        let mut traversed_len = 0u32;
+
+        loop {
+            // c: fdb_tsdb.c:624
+            traversed_len += self.parent.sec_size;
+            let mut sector = TsdbSecInfo::default();
+            // c: fdb_tsdb.c:625-627 — read_sector_info (continue on error)
+            if self.read_sector_info(flash, sec_addr, &mut sector, false).is_ok() {
+                // c: fdb_tsdb.c:629 — sector has TSL
+                if sector.status == FdbSectorStoreStatus::Using
+                    || sector.status == FdbSectorStoreStatus::Full
+                {
+                    // c: fdb_tsdb.c:630-633
+                    if sector.status == FdbSectorStoreStatus::Using {
+                        sector = self.cur_sec.clone();
+                    }
+                    // c: fdb_tsdb.c:634
+                    let mut tsl = FdbTsl::default();
+                    tsl.addr_index = sector.end_idx;
+                    // c: fdb_tsdb.c:636-642 — search all TSL (reverse)
+                    loop {
+                        self.read_tsl(flash, &mut tsl);
+                        if cb(&tsl) {
+                            return; // c: goto __exit
+                        }
+                        let next = FdbTsdb::get_last_tsl_addr(&sector, &tsl);
+                        if next == FAILED_ADDR {
+                            break;
+                        }
+                        tsl.addr_index = next;
+                    }
+                } else if sector.status == FdbSectorStoreStatus::Empty
+                    || sector.status == FdbSectorStoreStatus::Unused
+                {
+                    // c: fdb_tsdb.c:643-644 — goto __exit
+                    return;
+                }
+            }
+            // c: fdb_tsdb.c:645 — get_last_sector_addr
+            let next = self.get_last_sector_addr(&sector, traversed_len);
+            if next == FAILED_ADDR {
+                break;
+            }
+            sec_addr = next;
+        }
+    }
+
+    /// c: fdb_tsdb.c:654-680 — search_start_tsl_addr
+    ///
+    /// Binary search for the first TSL address matching the `from` timestamp.
+    /// Uses `i32` arithmetic to match the C `int` types. When `from > to`
+    /// (reverse iteration), adjusts the start position backward if the found
+    /// TSL's time exceeds `from`.
+    fn search_start_tsl_addr<F: FlashDevice>(
+        &self,
+        flash: &F,
+        start: u32,
+        end: u32,
+        from: FdbTime,
+        to: FdbTime,
+    ) -> u32 {
+        // c: fdb_tsdb.c:654-680 — C uses `int` for start/end
+        let mut start = start as i32;
+        let mut end = end as i32;
+        let mut tsl = FdbTsl::default();
+
+        loop {
+            // c: fdb_tsdb.c:658 — tsl.addr.index = start + FDB_ALIGN((end - start) / 2, LOG_IDX_DATA_SIZE)
+            let half = (end - start) / 2;
+            let aligned_half = align_up(half as u32, LOG_IDX_DATA_SIZE as u32) as i32;
+            tsl.addr_index = (start + aligned_half) as u32;
+            self.read_tsl(flash, &mut tsl);
+
+            if tsl.time < from {
+                // c: fdb_tsdb.c:660-661
+                start = tsl.addr_index as i32 + LOG_IDX_DATA_SIZE as i32;
+            } else if tsl.time > from {
+                // c: fdb_tsdb.c:662-663
+                end = tsl.addr_index as i32 - LOG_IDX_DATA_SIZE as i32;
+            } else {
+                // c: fdb_tsdb.c:664-665 — exact match
+                return tsl.addr_index;
+            }
+
+            // c: fdb_tsdb.c:668-677
+            if start > end {
+                if from > to {
+                    // c: fdb_tsdb.c:670-674 — reverse iteration adjustment
+                    tsl.addr_index = start as u32;
+                    self.read_tsl(flash, &mut tsl);
+                    if tsl.time > from {
+                        start -= LOG_IDX_DATA_SIZE as i32;
+                    }
+                }
+                break;
+            }
+        }
+
+        start as u32
+    }
+
+    /// c: fdb_tsdb.c:691-769 — fdb_tsl_iter_by_time
+    ///
+    /// Iterate TSLs within a time range. When `from <= to`, iterates forward
+    /// (oldest to newest); when `from > to`, iterates reverse (newest to
+    /// oldest). Uses binary search (`search_start_tsl_addr`) to find the
+    /// starting TSL within each sector.
+    pub fn tsl_iter_by_time<F: FlashDevice>(
+        &self,
+        flash: &F,
+        from: FdbTime,
+        to: FdbTime,
+        mut cb: impl FnMut(&FdbTsl) -> bool,
+    ) {
+        // c: fdb_tsdb.c:701-703
+        if !self.parent.init_ok {
+            return;
+        }
+
+        // c: fdb_tsdb.c:705-713 — select direction
+        let forward = from <= to;
+        let start_addr = if forward {
+            self.parent.oldest_addr
+        } else {
+            self.cur_sec.addr
+        };
+
+        let mut sec_addr = start_addr;
+        let mut traversed_len = 0u32;
+        let mut found_start_tsl = false;
+
+        loop {
+            // c: fdb_tsdb.c:726
+            traversed_len += self.parent.sec_size;
+            let mut sector = TsdbSecInfo::default();
+            // c: fdb_tsdb.c:727-729 — read_sector_info (continue on error)
+            if self.read_sector_info(flash, sec_addr, &mut sector, false).is_ok() {
+                // c: fdb_tsdb.c:731 — sector has TSL
+                if sector.status == FdbSectorStoreStatus::Using
+                    || sector.status == FdbSectorStoreStatus::Full
+                {
+                    // c: fdb_tsdb.c:732-735
+                    if sector.status == FdbSectorStoreStatus::Using {
+                        sector = self.cur_sec.clone();
+                    }
+                    // c: fdb_tsdb.c:736-740 — check if this sector overlaps the target range
+                    let should_search = found_start_tsl
+                        || (!found_start_tsl
+                            && (if forward {
+                                (sec_addr == start_addr && from <= sector.start_time)
+                                    || from <= sector.end_time
+                            } else {
+                                (sec_addr == start_addr && from >= sector.end_time)
+                                    || from >= sector.start_time
+                            }));
+
+                    if should_search {
+                        // c: fdb_tsdb.c:741
+                        let start = sector.addr + SECTOR_HDR_DATA_SIZE as u32;
+                        let end = sector.end_idx;
+
+                        found_start_tsl = true;
+                        // c: fdb_tsdb.c:745 — search the first start TSL address
+                        let mut tsl = FdbTsl::default();
+                        tsl.addr_index = self.search_start_tsl_addr(flash, start, end, from, to);
+
+                        // c: fdb_tsdb.c:747-760 — search all TSL
+                        loop {
+                            self.read_tsl(flash, &mut tsl);
+                            if tsl.status != FdbTslStatus::Unused {
+                                // c: fdb_tsdb.c:750-751 — check time range
+                                let in_range = if forward {
+                                    tsl.time >= from && tsl.time <= to
+                                } else {
+                                    tsl.time <= from && tsl.time >= to
+                                };
+                                if in_range {
+                                    // c: fdb_tsdb.c:753-754
+                                    if cb(&tsl) {
+                                        return; // c: goto __exit
+                                    }
+                                } else {
+                                    // c: fdb_tsdb.c:756-757 — out of range → stop
+                                    return; // c: goto __exit
+                                }
+                            }
+                            // c: fdb_tsdb.c:760 — get_tsl_addr (forward or reverse)
+                            let next = if forward {
+                                FdbTsdb::get_next_tsl_addr(&sector, &tsl)
+                            } else {
+                                FdbTsdb::get_last_tsl_addr(&sector, &tsl)
+                            };
+                            if next == FAILED_ADDR {
+                                break;
+                            }
+                            tsl.addr_index = next;
+                        }
+                    }
+                } else if sector.status == FdbSectorStoreStatus::Empty {
+                    // c: fdb_tsdb.c:762-763 — goto __exit
+                    return;
+                }
+            }
+            // c: fdb_tsdb.c:765 — get_sector_addr (forward or reverse)
+            let next = if forward {
+                self.get_next_sector_addr(&sector, traversed_len)
+            } else {
+                self.get_last_sector_addr(&sector, traversed_len)
+            };
+            if next == FAILED_ADDR {
+                break;
+            }
+            sec_addr = next;
+        }
+    }
+
+    /// c: fdb_tsdb.c:790-805 — fdb_tsl_query_count
+    ///
+    /// Query the count of TSLs matching `status` within the time range
+    /// [`from`, `to`].
+    pub fn tsl_query_count<F: FlashDevice>(
+        &self,
+        flash: &F,
+        from: FdbTime,
+        to: FdbTime,
+        status: FdbTslStatus,
+    ) -> usize {
+        // c: fdb_tsdb.c:796-799
+        if !self.parent.init_ok {
+            return 0;
+        }
+        // c: fdb_tsdb.c:792-794 + query_count_cb (c: fdb_tsdb.c:771-780)
+        let mut count: usize = 0;
+        self.tsl_iter_by_time(flash, from, to, |tsl| {
+            if tsl.status == status {
+                count += 1;
+            }
+            false // continue iteration
+        });
+        count
+    }
+
+    /// c: fdb_tsdb.c:814-827 — fdb_tsl_max_blob_count
+    ///
+    /// Get the maximum number of TSL blobs the database can hold, assuming
+    /// all blobs are `max_len` (or `FDB_TSDB_FIXED_BLOB_SIZE` if defined).
+    pub fn tsl_max_blob_count(&self) -> usize {
+        // c: fdb_tsdb.c:816-820
+        #[cfg(feature = "fixed_blob_size")]
+        let max_blob_len = FDB_TSDB_FIXED_BLOB_SIZE as u32;
+        #[cfg(not(feature = "fixed_blob_size"))]
+        let max_blob_len = self.max_len as u32;
+
+        // c: fdb_tsdb.c:822-826
+        let sec_size = self.parent.sec_size as usize - SECTOR_HDR_DATA_SIZE;
+        let blob_size = LOG_IDX_DATA_SIZE + wg_align(max_blob_len) as usize;
+        let n_sec = (self.parent.max_size / self.parent.sec_size) as usize;
+
+        n_sec * (sec_size / blob_size)
+    }
+
+    /// c: fdb_tsdb.c:838-847 — fdb_tsl_set_status
+    ///
+    /// Set the status of a TSL node. Writes the status to flash at the TSL's
+    /// index address.
+    pub fn tsl_set_status<F: FlashDevice>(
+        &mut self,
+        flash: &mut F,
+        tsl: &FdbTsl,
+        status: FdbTslStatus,
+    ) -> Result<(), FdbErr> {
+        // c: fdb_tsdb.c:841
+        let mut status_table = [0u8; TSL_STATUS_TABLE_SIZE];
+        // c: fdb_tsdb.c:844 — _FDB_WRITE_STATUS
+        write_status(
+            flash,
+            tsl.addr_index,
+            &mut status_table,
+            FDB_TSL_STATUS_NUM as usize,
+            status as usize,
+        )?;
+        Ok(())
+    }
 }
 
 // ==========================================================================
@@ -1241,8 +1600,8 @@ impl FdbTsdb {
 mod tests {
     use super::*;
     use crate::def::{
-        FdbBlob, FdbSectorStoreStatus, FdbTsl, FdbTslStatus, TsdbSecInfo, FDB_DATA_UNUSED,
-        FDB_SECTOR_STORE_STATUS_NUM, FDB_STORE_STATUS_TABLE_SIZE, FDB_TSL_STATUS_NUM,
+        FdbSectorStoreStatus, FdbTsl, FdbTslStatus, TsdbSecInfo, FDB_SECTOR_STORE_STATUS_NUM,
+        FDB_STORE_STATUS_TABLE_SIZE, FDB_TSL_STATUS_NUM,
     };
     use crate::low_lvl::{blob_make, blob_read, status_table_size, wg_align};
     use crate::mock_flash::MockFlash;
@@ -2029,5 +2388,554 @@ mod tests {
         db.set_not_formatable(true);
         let result = db.init(&mut flash, "test", "part", test_get_time, 256);
         assert!(result.is_ok(), "init on pre-formatted flash with not_formatable should succeed: {:?}", result);
+    }
+
+    // ---- T17: Iter / query / set_status tests ----
+
+    /// Helper: init a TSDB and append TSLs with timestamps [100, 200, ..., 500]
+    fn setup_tsdb_with_data() -> (FdbTsdb, MockFlash) {
+        let mut flash = MockFlash::new("test", 4096, 16384, 4096);
+        let mut db = FdbTsdb::default();
+        db.parent.sec_size = 4096;
+        db.parent.max_size = 16384;
+        db.init(&mut flash, "test", "part", test_get_time, 256).unwrap();
+
+        for i in 1..=5 {
+            let mut data = [i as u8; 32];
+            let mut blob = blob_make(&mut data);
+            blob.size = 32;
+            let ts = i as FdbTime * 100;
+            db.tsl_append_with_ts(&mut flash, &blob, ts).unwrap();
+        }
+        (db, flash)
+    }
+
+    #[test]
+    fn test_tsl_iter() {
+        // c: fdb_tsdb.c:556-597 — forward iteration
+        let (db, flash) = setup_tsdb_with_data();
+
+        let mut timestamps = Vec::new();
+        db.tsl_iter(&flash, |tsl| {
+            timestamps.push(tsl.time);
+            false // continue
+        });
+
+        assert_eq!(timestamps, vec![100, 200, 300, 400, 500], "forward iter must be in ascending order");
+    }
+
+    #[test]
+    fn test_tsl_iter_callback_stops() {
+        // Callback returning true should stop iteration
+        let (db, flash) = setup_tsdb_with_data();
+
+        let mut count = 0;
+        db.tsl_iter(&flash, |_tsl| {
+            count += 1;
+            count >= 3 // stop after 3
+        });
+
+        assert_eq!(count, 3, "iteration must stop when callback returns true");
+    }
+
+    #[test]
+    fn test_tsl_iter_reverse() {
+        // c: fdb_tsdb.c:606-649 — reverse iteration
+        let (db, flash) = setup_tsdb_with_data();
+
+        let mut timestamps = Vec::new();
+        db.tsl_iter_reverse(&flash, |tsl| {
+            timestamps.push(tsl.time);
+            false
+        });
+
+        assert_eq!(timestamps, vec![500, 400, 300, 200, 100], "reverse iter must be in descending order");
+    }
+
+    #[test]
+    fn test_tsl_iter_reverse_stops() {
+        let (db, flash) = setup_tsdb_with_data();
+
+        let mut count = 0;
+        db.tsl_iter_reverse(&flash, |_tsl| {
+            count += 1;
+            count >= 2
+        });
+
+        assert_eq!(count, 2, "reverse iteration must stop when callback returns true");
+    }
+
+    #[test]
+    fn test_tsl_iter_by_time_forward() {
+        // c: fdb_tsdb.c:691-769 — range query [200, 400]
+        let (db, flash) = setup_tsdb_with_data();
+
+        let mut timestamps = Vec::new();
+        db.tsl_iter_by_time(&flash, 200, 400, |tsl| {
+            timestamps.push(tsl.time);
+            false
+        });
+
+        assert_eq!(timestamps, vec![200, 300, 400], "range [200,400] must return 3 TSLs");
+    }
+
+    #[test]
+    fn test_tsl_iter_by_time_full_range() {
+        // Full range [100, 500]
+        let (db, flash) = setup_tsdb_with_data();
+
+        let mut count = 0;
+        db.tsl_iter_by_time(&flash, 100, 500, |_tsl| {
+            count += 1;
+            false
+        });
+        assert_eq!(count, 5, "full range must return all 5 TSLs");
+    }
+
+    #[test]
+    fn test_tsl_iter_by_time_reverse() {
+        // from > to → reverse iteration
+        let (db, flash) = setup_tsdb_with_data();
+
+        let mut timestamps = Vec::new();
+        db.tsl_iter_by_time(&flash, 400, 200, |tsl| {
+            timestamps.push(tsl.time);
+            false
+        });
+
+        assert_eq!(timestamps, vec![400, 300, 200], "reverse range [400,200] must return 3 TSLs in descending order");
+    }
+
+    #[test]
+    fn test_tsl_iter_by_time_single() {
+        // Range containing a single TSL
+        let (db, flash) = setup_tsdb_with_data();
+
+        let mut timestamps = Vec::new();
+        db.tsl_iter_by_time(&flash, 300, 300, |tsl| {
+            timestamps.push(tsl.time);
+            false
+        });
+
+        assert_eq!(timestamps, vec![300], "range [300,300] must return exactly 1 TSL");
+    }
+
+    #[test]
+    fn test_query_count() {
+        // c: fdb_tsdb.c:790-805 — count TSLs with WRITE status
+        let (db, flash) = setup_tsdb_with_data();
+
+        let count = db.tsl_query_count(&flash, 100, 500, FdbTslStatus::Write);
+        assert_eq!(count, 5, "all 5 TSLs have WRITE status");
+
+        let count = db.tsl_query_count(&flash, 200, 400, FdbTslStatus::Write);
+        assert_eq!(count, 3, "range [200,400] has 3 TSLs with WRITE status");
+
+        let count = db.tsl_query_count(&flash, 100, 500, FdbTslStatus::Deleted);
+        assert_eq!(count, 0, "no TSLs with DELETED status");
+    }
+
+    #[test]
+    fn test_set_status() {
+        // c: fdb_tsdb.c:838-847 — set TSL status and verify persistence
+        let (mut db, mut flash) = setup_tsdb_with_data();
+
+        // Find the TSL at timestamp 300 and set it to DELETED
+        let mut target_tsl: Option<FdbTsl> = None;
+        db.tsl_iter(&flash, |tsl| {
+            if tsl.time == 300 {
+                target_tsl = Some(*tsl);
+                true // stop
+            } else {
+                false
+            }
+        });
+        let tsl = target_tsl.expect("TSL with time=300 must exist");
+
+        // Set status to DELETED
+        db.tsl_set_status(&mut flash, &tsl, FdbTslStatus::Deleted).unwrap();
+
+        // Verify by re-reading the TSL
+        let mut reread_tsl = FdbTsl::default();
+        reread_tsl.addr_index = tsl.addr_index;
+        db.read_tsl(&flash, &mut reread_tsl);
+        assert_eq!(
+            reread_tsl.status,
+            FdbTslStatus::Deleted,
+            "TSL status must be DELETED after set_status"
+        );
+
+        // Verify query_count reflects the change
+        let count_deleted = db.tsl_query_count(&flash, 100, 500, FdbTslStatus::Deleted);
+        assert_eq!(count_deleted, 1, "1 TSL should have DELETED status");
+
+        let count_write = db.tsl_query_count(&flash, 100, 500, FdbTslStatus::Write);
+        assert_eq!(count_write, 4, "4 TSLs should still have WRITE status");
+    }
+
+    #[test]
+    fn test_max_blob_count() {
+        // c: fdb_tsdb.c:814-827 — max blob count calculation
+        let mut flash = MockFlash::new("test", 4096, 16384, 4096);
+        let mut db = FdbTsdb::default();
+        db.parent.sec_size = 4096;
+        db.parent.max_size = 16384;
+        db.init(&mut flash, "test", "part", test_get_time, 256).unwrap();
+
+        // max_blob_count = n_sec * (sec_size - SECTOR_HDR_DATA_SIZE) / (LOG_IDX_DATA_SIZE + wg_align(max_len))
+        // = 4 * (4096 - 32) / (16 + 256)
+        // = 4 * 4064 / 272
+        // = 4 * 14 (integer division)
+        // = 56
+        let expected = 4 * ((4096 - SECTOR_HDR_DATA_SIZE) / (LOG_IDX_DATA_SIZE + wg_align(256) as usize));
+        assert_eq!(db.tsl_max_blob_count(), expected, "max_blob_count must match formula");
+        assert!(db.tsl_max_blob_count() > 0, "max_blob_count must be positive");
+    }
+
+    #[test]
+    fn test_tsl_to_blob() {
+        // c: fdb_tsdb.c:857-864 — tsl_to_blob sets saved fields
+        let (db, flash) = setup_tsdb_with_data();
+
+        // Get the first TSL
+        let mut first_tsl: Option<FdbTsl> = None;
+        db.tsl_iter(&flash, |tsl| {
+            first_tsl = Some(*tsl);
+            true // stop after first
+        });
+        let tsl = first_tsl.expect("at least one TSL must exist");
+
+        // Convert to blob
+        let mut read_buf = [0u8; 64];
+        let mut blob = blob_make(&mut read_buf);
+        let ret = db.tsl_to_blob(&tsl, &mut blob);
+
+        assert_eq!(ret, tsl.log_len as usize, "return value must be log_len");
+        assert_eq!(blob.saved_addr, tsl.addr_log, "saved_addr must match tsl.addr_log");
+        assert_eq!(blob.saved_meta_addr, tsl.addr_index, "saved_meta_addr must match tsl.addr_index");
+        assert_eq!(blob.saved_len, tsl.log_len as usize, "saved_len must match tsl.log_len");
+
+        // Read the blob data
+        let read_len = blob_read(&flash, &mut blob);
+        assert_eq!(read_len, 32, "blob_read should return 32 bytes");
+        assert_eq!(&read_buf[..32], &[1u8; 32], "blob data should be [1; 32]");
+    }
+
+    // ---- T18: Comprehensive edge case tests ----
+
+    #[test]
+    fn test_multi_sector_rollover() {
+        // c: fdb_tsdb.c:411-420 — 4 sectors with rollover, verify data survives wrap-around
+        let mut flash = MockFlash::new("test", 512, 2048, 512); // 4 sectors
+        let mut db = FdbTsdb::default();
+        db.parent.sec_size = 512;
+        db.parent.max_size = 2048;
+        db.init(&mut flash, "test", "part", test_get_time, 64).unwrap();
+
+        let tsls_per_sec = (512 - SECTOR_HDR_DATA_SIZE) / (LOG_IDX_DATA_SIZE + wg_align(16) as usize);
+        // Append enough TSLs to fill all 4 sectors and wrap around
+        let total = tsls_per_sec * 4 + tsls_per_sec; // 5 sector-fulls
+        for i in 1..=total {
+            let mut data = [(i % 100) as u8; 16];
+            let mut blob = blob_make(&mut data);
+            blob.size = 16;
+            db.tsl_append_with_ts(&mut flash, &blob, i as FdbTime * 10).unwrap();
+        }
+
+        // Verify data can be iterated (at least the most recent sector-full of data)
+        let mut count = 0;
+        db.tsl_iter(&flash, |_tsl| {
+            count += 1;
+            false
+        });
+        // After rollover, old data is overwritten. The exact count depends on
+        // how many sectors were overwritten. At least 1 sector of data should exist.
+        assert!(count > 0, "iter must return TSLs after multi-sector rollover");
+    }
+
+    #[test]
+    fn test_recovery_pre_write() {
+        // c: fdb_tsdb.c:280-304 — PRE_WRITE TSL recovery on reboot
+        // Simulate a crash during append: TSL 0 is WRITE, TSL 1 is PRE_WRITE
+        let mut flash = MockFlash::new("test", 4096, 16384, 4096);
+        let mut db = FdbTsdb::default();
+        db.parent.sec_size = 4096;
+        db.parent.max_size = 16384;
+        db.init(&mut flash, "test", "part", test_get_time, 256).unwrap();
+
+        // Append one TSL (ts=100, status=WRITE)
+        let mut data = [0x55u8; 32];
+        let mut blob = blob_make(&mut data);
+        blob.size = 32;
+        db.tsl_append_with_ts(&mut flash, &blob, 100).unwrap();
+
+        // Simulate crash: write PRE_WRITE status at the next TSL index position
+        let next_idx_addr = SECTOR_HDR_DATA_SIZE as u32 + LOG_IDX_DATA_SIZE as u32;
+        let mut status_table = [0u8; TSL_STATUS_TABLE_SIZE];
+        write_status(
+            &mut flash,
+            next_idx_addr,
+            &mut status_table,
+            FDB_TSL_STATUS_NUM as usize,
+            FdbTslStatus::PreWrite as usize,
+        ).unwrap();
+
+        // Reboot: deinit + init
+        db.deinit().unwrap();
+        let mut db2 = FdbTsdb::default();
+        db2.parent.sec_size = 4096;
+        db2.parent.max_size = 16384;
+        db2.init(&mut flash, "test", "part", test_get_time, 256).unwrap();
+
+        // Verify last_time is recovered from the WRITE TSL (not PRE_WRITE)
+        assert_eq!(
+            db2.last_time, 100,
+            "last_time must be 100 (from WRITE TSL, not PRE_WRITE which has time=0)"
+        );
+
+        // Verify the WRITE TSL is still readable
+        let mut tsl = FdbTsl::default();
+        tsl.addr_index = SECTOR_HDR_DATA_SIZE as u32;
+        db2.read_tsl(&flash, &mut tsl);
+        assert_eq!(tsl.status, FdbTslStatus::Write);
+        assert_eq!(tsl.time, 100);
+
+        // Verify the PRE_WRITE TSL is read with time=0 and max_len
+        let mut tsl2 = FdbTsl::default();
+        tsl2.addr_index = next_idx_addr;
+        db2.read_tsl(&flash, &mut tsl2);
+        assert_eq!(tsl2.status, FdbTslStatus::PreWrite);
+        assert_eq!(tsl2.time, 0, "PRE_WRITE TSL must have time=0");
+        assert_eq!(tsl2.log_len, 256, "PRE_WRITE TSL log_len must be max_len");
+
+        // Verify we can still append after recovery
+        let mut data2 = [0xAAu8; 16];
+        let mut blob2 = blob_make(&mut data2);
+        blob2.size = 16;
+        let result = db2.tsl_append_with_ts(&mut flash, &blob2, 200);
+        assert!(result.is_ok(), "append after recovery must succeed: {:?}", result);
+    }
+
+    #[test]
+    fn test_end_info_save() {
+        // c: fdb_tsdb.c:396-407 — verify end_info is saved when sector closes
+        let mut flash = MockFlash::new("test", 512, 1024, 512); // 2 sectors
+        let mut db = FdbTsdb::default();
+        db.parent.sec_size = 512;
+        db.parent.max_size = 1024;
+        db.init(&mut flash, "test", "part", test_get_time, 64).unwrap();
+
+        // Fill sector 0 to trigger sector switch
+        let tsls_per_sec = (512 - SECTOR_HDR_DATA_SIZE) / (LOG_IDX_DATA_SIZE + wg_align(16) as usize);
+        for i in 1..=tsls_per_sec {
+            let mut data = [i as u8; 16];
+            let mut blob = blob_make(&mut data);
+            blob.size = 16;
+            db.tsl_append_with_ts(&mut flash, &blob, i as FdbTime * 10).unwrap();
+        }
+        // Next append triggers sector switch (sector 0 → sector 1)
+        let mut data = [0xFFu8; 16];
+        let mut blob = blob_make(&mut data);
+        blob.size = 16;
+        db.tsl_append_with_ts(&mut flash, &blob, (tsls_per_sec + 1) as FdbTime * 10).unwrap();
+
+        // Read sector 0 header from flash to verify end_info
+        let mut hdr_buf = [0u8; core::mem::size_of::<TsdbSectorHdrData>()];
+        flash.read(0, &mut hdr_buf).unwrap();
+
+        // Check end_info[0] or end_info[1] has WRITE status
+        let end0_status_idx = get_status(
+            &hdr_buf[SECTOR_END0_STATUS_OFFSET..SECTOR_END0_STATUS_OFFSET + TSL_STATUS_TABLE_SIZE],
+            FDB_TSL_STATUS_NUM as usize,
+        );
+        let end1_status_idx = get_status(
+            &hdr_buf[SECTOR_END1_STATUS_OFFSET..SECTOR_END1_STATUS_OFFSET + TSL_STATUS_TABLE_SIZE],
+            FDB_TSL_STATUS_NUM as usize,
+        );
+
+        let (end_time, end_idx, found) = if tsl_status_from_index(end0_status_idx) == FdbTslStatus::Write {
+            (read_time_ne(&hdr_buf, SECTOR_END0_TIME_OFFSET),
+             read_u32_ne(&hdr_buf, SECTOR_END0_IDX_OFFSET), true)
+        } else if tsl_status_from_index(end1_status_idx) == FdbTslStatus::Write {
+            (read_time_ne(&hdr_buf, SECTOR_END1_TIME_OFFSET),
+             read_u32_ne(&hdr_buf, SECTOR_END1_IDX_OFFSET), true)
+        } else {
+            (0, 0, false)
+        };
+
+        assert!(found, "at least one end_info must have WRITE status after sector close");
+        assert_eq!(
+            end_time,
+            tsls_per_sec as FdbTime * 10,
+            "end_time must be the last TSL's timestamp before sector close"
+        );
+        // end_idx is the index of the last TSL in sector 0
+        let expected_end_idx = SECTOR_HDR_DATA_SIZE as u32 + (tsls_per_sec as u32 - 1) * LOG_IDX_DATA_SIZE as u32;
+        assert_eq!(
+            end_idx, expected_end_idx,
+            "end_idx must point to the last TSL in sector 0"
+        );
+    }
+
+    #[test]
+    fn test_reboot_persistence() {
+        // c: fdb_tsdb_tc.c:110-114 — reboot (deinit + init) preserves data
+        let mut flash = MockFlash::new("test", 4096, 16384, 4096);
+
+        // First boot: init + append 5 TSLs
+        {
+            let mut db = FdbTsdb::default();
+            db.parent.sec_size = 4096;
+            db.parent.max_size = 16384;
+            db.init(&mut flash, "test", "part", test_get_time, 256).unwrap();
+            for i in 1..=5 {
+                let mut data = [i as u8; 32];
+                let mut blob = blob_make(&mut data);
+                blob.size = 32;
+                db.tsl_append_with_ts(&mut flash, &blob, i as FdbTime * 100).unwrap();
+            }
+            assert_eq!(db.last_time, 500);
+            db.deinit().unwrap();
+        }
+
+        // Reboot: re-init and verify data persists
+        {
+            let mut db = FdbTsdb::default();
+            db.parent.sec_size = 4096;
+            db.parent.max_size = 16384;
+            db.init(&mut flash, "test", "part", test_get_time, 256).unwrap();
+            assert_eq!(db.last_time, 500, "last_time must be recovered after reboot");
+
+            let mut timestamps = Vec::new();
+            db.tsl_iter(&flash, |tsl| {
+                timestamps.push(tsl.time);
+                false
+            });
+            assert_eq!(timestamps, vec![100, 200, 300, 400, 500], "all TSLs must persist after reboot");
+        }
+    }
+
+    #[test]
+    fn test_max_blob_count_boundary() {
+        // c: fdb_tsdb.c:814-827 — max_blob_count with various configurations
+        let mut flash = MockFlash::new("test", 4096, 16384, 4096);
+        let mut db = FdbTsdb::default();
+        db.parent.sec_size = 4096;
+        db.parent.max_size = 16384;
+        db.init(&mut flash, "test", "part", test_get_time, 256).unwrap();
+
+        // Verify max_blob_count is consistent with actual capacity
+        let max_count = db.tsl_max_blob_count();
+        assert!(max_count > 0);
+
+        // Verify the formula: n_sec * (sec_size - hdr) / (idx_size + wg_align(max_len))
+        let n_sec = 16384 / 4096;
+        let avail_per_sec = 4096 - SECTOR_HDR_DATA_SIZE;
+        let per_blob = LOG_IDX_DATA_SIZE + wg_align(256) as usize;
+        assert_eq!(max_count, n_sec * (avail_per_sec / per_blob));
+
+        // With small max_len, more TSLs fit
+        let mut flash2 = MockFlash::new("test", 4096, 16384, 4096);
+        let mut db2 = FdbTsdb::default();
+        db2.parent.sec_size = 4096;
+        db2.parent.max_size = 16384;
+        db2.init(&mut flash2, "test", "part", test_get_time, 16).unwrap();
+        let max_count_small = db2.tsl_max_blob_count();
+        assert!(
+            max_count_small > max_count,
+            "smaller max_len should allow more TSLs"
+        );
+    }
+
+    #[test]
+    fn test_iter_empty_db() {
+        // Iter on empty (freshly formatted) database should return no TSLs
+        let mut flash = MockFlash::new("test", 4096, 16384, 4096);
+        let mut db = FdbTsdb::default();
+        db.parent.sec_size = 4096;
+        db.parent.max_size = 16384;
+        db.init(&mut flash, "test", "part", test_get_time, 256).unwrap();
+
+        let mut count = 0;
+        db.tsl_iter(&flash, |_tsl| {
+            count += 1;
+            false
+        });
+        assert_eq!(count, 0, "empty DB iter must return 0 TSLs");
+
+        db.tsl_iter_reverse(&flash, |_tsl| {
+            count += 1;
+            false
+        });
+        assert_eq!(count, 0, "empty DB reverse iter must return 0 TSLs");
+
+        let qc = db.tsl_query_count(&flash, 0, 10000, FdbTslStatus::Write);
+        assert_eq!(qc, 0, "empty DB query_count must return 0");
+    }
+
+    #[test]
+    fn test_iter_by_time_no_match() {
+        // Range query that doesn't match any TSL
+        let (db, flash) = setup_tsdb_with_data(); // TSLs at 100, 200, 300, 400, 500
+
+        let mut count = 0;
+        db.tsl_iter_by_time(&flash, 1000, 2000, |_tsl| {
+            count += 1;
+            false
+        });
+        assert_eq!(count, 0, "range [1000,2000] must return 0 TSLs");
+    }
+
+    #[test]
+    fn test_clean_after_reboot() {
+        // c: fdb_tsdb_tc.c:211-226 — clean after reboot
+        let mut flash = MockFlash::new("test", 4096, 16384, 4096);
+
+        // Boot 1: init + append data
+        {
+            let mut db = FdbTsdb::default();
+            db.parent.sec_size = 4096;
+            db.parent.max_size = 16384;
+            db.init(&mut flash, "test", "part", test_get_time, 256).unwrap();
+            for i in 1..=5 {
+                let mut data = [i as u8; 32];
+                let mut blob = blob_make(&mut data);
+                blob.size = 32;
+                db.tsl_append_with_ts(&mut flash, &blob, i as FdbTime * 100).unwrap();
+            }
+            db.deinit().unwrap();
+        }
+
+        // Boot 2: clean
+        {
+            let mut db = FdbTsdb::default();
+            db.parent.sec_size = 4096;
+            db.parent.max_size = 16384;
+            db.init(&mut flash, "test", "part", test_get_time, 256).unwrap();
+            db.tsl_clean(&mut flash);
+
+            let mut count = 0;
+            db.tsl_iter(&flash, |_tsl| {
+                count += 1;
+                false
+            });
+            assert_eq!(count, 0, "iter after clean must return 0 TSLs");
+            assert_eq!(db.last_time, 0, "last_time must be 0 after clean");
+            db.deinit().unwrap();
+        }
+
+        // Boot 3: verify still clean
+        {
+            let mut db = FdbTsdb::default();
+            db.parent.sec_size = 4096;
+            db.parent.max_size = 16384;
+            db.init(&mut flash, "test", "part", test_get_time, 256).unwrap();
+            let mut count = 0;
+            db.tsl_iter(&flash, |_tsl| {
+                count += 1;
+                false
+            });
+            assert_eq!(count, 0, "iter after reboot+clean must still return 0 TSLs");
+        }
     }
 }
