@@ -17,6 +17,7 @@ kv_cache = ["kvdb"]
 kv_auto_update = ["kvdb"]
 timestamp_64bit = []
 debug_enable = []
+fixed_blob_size = []
 gran_8 = []
 gran_32 = []
 gran_64 = []
@@ -32,3 +33,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 [[test]]
 name = "kvdb_equiv"
 path = "tests/c-port/kvdb_equiv.rs"
+
+[[test]]
+name = "tsdb_equiv"
+path = "tests/c-port/tsdb_equiv.rs"
