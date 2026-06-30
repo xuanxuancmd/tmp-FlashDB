@@ -1,0 +1,30 @@
+[package]
+name = "flashdb"
+version = "2.2.99"
+edition = "2021"
+description = "An IoT database library for flash devices, 1:1 Rust port of FlashDB"
+license = "Apache-2.0"
+
+[lib]
+name = "flashdb"
+
+[features]
+default = ["kvdb", "tsdb"]
+kvdb = []
+tsdb = []
+file_mode = []
+kv_cache = ["kvdb"]
+kv_auto_update = ["kvdb"]
+timestamp_64bit = []
+debug_enable = []
+gran_8 = []
+gran_32 = []
+gran_64 = []
+gran_128 = []
+gran_256 = []
+
+[dependencies]
+
+[dev-dependencies]
+cucumber = "0.21"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
