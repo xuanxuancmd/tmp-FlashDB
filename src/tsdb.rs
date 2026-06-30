@@ -550,10 +550,10 @@ impl FdbTsdb {
             && sector.end_info_stat[1] == FdbTslStatus::PreWrite
         {
             // c: fdb_tsdb.c:273 — FDB_ASSERT(0)
-            panic!(
-                "read_sector_info: both end_info entries are PRE_WRITE (sector 0x{:08X})",
-                addr
-            );
+            // Rust: return error instead of panic (safer than C's assert which
+            // is compiled out in release; this state is unreachable in normal
+            // operation but we handle it gracefully).
+            return Err(FdbErr::ReadErr);
         }
 
         // c: fdb_tsdb.c:276-279 — calculate remain space

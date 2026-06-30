@@ -1,6 +1,11 @@
 // c: flashdb.h — Public API crate root
 #![cfg_attr(not(test), no_std)]
 #![allow(clippy::missing_safety_doc)]
+#![deny(clippy::todo)]
+#![deny(clippy::unimplemented)]
+#![deny(clippy::panic)]
+#![deny(clippy::unreachable)]
+#![deny(clippy::dbg_macro)]
 
 // KVDB public APIs (fdb_kv_get -> Option<String>, fdb_kv_print -> String) need
 // dynamic allocation. `extern crate alloc` works in both std (tests) and no_std
