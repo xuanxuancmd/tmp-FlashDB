@@ -6,6 +6,9 @@ permission:
   write: allow
   glob: allow
   grep: allow
+  read: allow
+  todowrite: allow
+  skill: allow
   bash:
     "cargo check *": allow
     "cargo build *": allow

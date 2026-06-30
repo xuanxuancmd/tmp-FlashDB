@@ -1,0 +1,33 @@
+{
+  "module": "flashdb",
+  "plan": ".sisyphus/plans/flashdb-c-to-rust/01-foundation.md",
+  "truth_source_path": [".sisyphus/plans/flashdb-c-to-rust/01-foundation.md"],
+  "status": "completed",
+  "last_run": "2026-06-30T14:09:47+08:00",
+  "workflow": {
+    "phase": "coding",
+    "current_plan": ".sisyphus/plans/flashdb-c-to-rust/01-foundation.md",
+    "current_task": null,
+    "current_skill": "c-translate-to-rust",
+    "fixing": null,
+    "tasks_completed": ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"],
+    "tasks_remaining": [],
+    "plan_status": null,
+    "attempt_counts": {
+      "T1": { "count": 0, "error_signature": null, "strategies_tried": [], "commit": "4beb567" },
+      "T2": { "count": 1, "error_signature": null, "strategies_tried": ["fix From<u32> for i32 via `as FdbTime`; add Debug to FdbDefaultKv/FdbDefaultKvNode"], "commit": "4beb567" },
+      "T3": { "count": 1, "error_signature": null, "strategies_tried": ["drop non-existent FlashError re-export in lib.rs; drop non-existent FdbByte import in mock_flash.rs"], "commit": "4beb567" },
+      "T4": { "count": 1, "error_signature": null, "strategies_tried": ["translate align/status_table_size const fns + set_status/get_status"], "commit": "4beb567" },
+      "T5": { "count": 1, "error_signature": null, "strategies_tried": ["translate flash_read/erase/write/write_align + continue_ff_addr over FlashDevice trait"], "commit": "4beb567" },
+      "T6": { "count": 1, "error_signature": null, "strategies_tried": ["1:1 copy CRC32 256-entry table + calc_crc32; verify vs canonical 0xCBF43926"], "commit": "4beb567" },
+      "T7": { "count": 1, "error_signature": null, "strategies_tried": ["translate write_status/read_status; fixed test_write_status_index0 assertion logic (0x00 dirty byte decodes as index 3, not 0)"], "commit": "4beb567" },
+      "T8": { "count": 1, "error_signature": null, "strategies_tried": ["translate blob_make/blob_read over FdbBlob"], "commit": "4beb567" },
+      "T9": { "count": 1, "error_signature": null, "strategies_tried": ["translate init_ex/init_finish/deinit/db_path; add path field to FdbDb; LOG_IS_SHOW as AtomicBool"], "commit": "4beb567" }
+    }
+  },
+  "blocked_reason": null,
+  "commits": [
+    "4beb567e1a4bb8c7efaeca3a4009efde0ee41e10",
+    "8259c7a6c6c0e5c413edc0ea844824ff5301945f"
+  ]
+}

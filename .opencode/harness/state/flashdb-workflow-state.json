@@ -1,0 +1,30 @@
+{
+  "module": "flashdb",
+  "plan": null,
+  "truth_source_path": [
+    ".sisyphus/plans/flashdb-c-to-rust/00-start.md",
+    ".sisyphus/plans/flashdb-c-to-rust/01-foundation.md",
+    ".sisyphus/plans/flashdb-c-to-rust/02-kvdb.md",
+    ".sisyphus/plans/flashdb-c-to-rust/03-tsdb.md",
+    ".sisyphus/plans/flashdb-c-to-rust/04-final.md"
+  ],
+  "status": "running",
+  "last_run": "2026-06-30T14:15:00+08:00",
+  "workflow": {
+    "phase": "coding",
+    "current_plan": null,
+    "current_task": "orchestration:dispatch-kvdb-tsdb-parallel",
+    "current_skill": null,
+    "fixing": null,
+    "tasks_completed": [],
+    "tasks_remaining": [],
+    "plan_status": {
+      ".sisyphus/plans/flashdb-c-to-rust/00-start.md": "completed",
+      ".sisyphus/plans/flashdb-c-to-rust/01-foundation.md": "completed",
+      ".sisyphus/plans/flashdb-c-to-rust/02-kvdb.md": "running",
+      ".sisyphus/plans/flashdb-c-to-rust/03-tsdb.md": "running",
+      ".sisyphus/plans/flashdb-c-to-rust/04-final.md": "pending"
+    },
+    "attempt_counts": {}
+  }
+}

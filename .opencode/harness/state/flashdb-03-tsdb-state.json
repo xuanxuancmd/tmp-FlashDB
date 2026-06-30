@@ -1,0 +1,25 @@
+{
+  "module": "flashdb",
+  "plan": ".sisyphus/plans/flashdb-c-to-rust/03-tsdb.md",
+  "truth_source_path": [".sisyphus/plans/flashdb-c-to-rust/03-tsdb.md"],
+  "status": "completed",
+  "last_run": "2026-06-30T00:00:00Z",
+  "workflow": {
+    "phase": "coding",
+    "current_plan": ".sisyphus/plans/flashdb-c-to-rust/03-tsdb.md",
+    "current_task": null,
+    "current_skill": "c-translate-to-rust",
+    "fixing": null,
+    "tasks_completed": ["t-14", "t-15", "t-16", "t-17", "t-18"],
+    "tasks_remaining": [],
+    "plan_status": null,
+    "attempt_counts": {
+      "t-14": {"count": 1, "error_signature": null, "strategies_tried": []},
+      "t-15": {"count": 1, "error_signature": null, "strategies_tried": []},
+      "t-16": {"count": 1, "error_signature": null, "strategies_tried": []},
+      "t-17": {"count": 1, "error_signature": null, "strategies_tried": []},
+      "t-18": {"count": 1, "error_signature": null, "strategies_tried": []}
+    }
+  },
+  "blocked_reason": null
+}
