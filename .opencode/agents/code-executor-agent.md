@@ -123,8 +123,8 @@ context_summary: {summary_path}
 
 | 技能 | 用途 |
 |------|------|
-| c-translate-to-rust | C 到 Rust 1:1 代码翻译指南，提供语法映射、禁令表、易错表 |
-| harness-bdd-design | Cucumber/Gherkin BDD 测试场景 Discovery + Formulation |
+| c-translate-to-rust | C 到 Rust 1:1 代码翻译实战指南，提供语法映射、禁令表、易错表 |
+| harness-bdd-design | Cucumber/Gherkin BDD 最佳实践指导技能，测试场景 Discovery + Formulation |
 
 > 若表格为空，则跳过技能加载，直接按计划执行编码。
 > **mode=fix 时不加载编码技能**（修复只需读 SUMMARY + issues + 代码，不需要从零编码的翻译/BDD 指引）。
@@ -190,7 +190,7 @@ build 或 test 失败时：
 2. 修复代码（针对该 task 的实现文件，**禁止通过修改/删除测试来让测试通过**）
 3. 重新运行 `cargo check` + `cargo test`
 4. 仍失败 → 重试（最多 3 次尝试，包含首次实现）
-5. **5 次仍未通过** → 标记该 task 为 `deviation-blocked`，记录错误签名到 state 的 `attempt_counts`，设置 `status="blocked"`，写入 blocked-reports，立即返回 PLAN COMPLETE 信号（`status=blocked`）
+5. **3 次仍未通过** → 标记该 task 为 `deviation-blocked`，记录错误签名到 state 的 `attempt_counts`，设置 `status="blocked"`，写入 blocked-reports，立即返回 PLAN COMPLETE 信号（`status=blocked`）
 
 ---
 

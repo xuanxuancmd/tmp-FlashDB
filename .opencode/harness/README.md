@@ -6,8 +6,8 @@
 
 | 子目录 | 用途 | 写入方 |
 |--------|------|--------|
-| `state/` | workflow 状态 JSON（`flashdb-workflow-state.json`） | workflow skill 写，`state-guard.py` hook 校验 |
-| `logs/` | 运行日志（`flashdb-run-log.md`） | hook 脚本自动追加 |
+| `state/` | workflow 状态 JSON（`{module}-workflow-state.json`） | workflow skill 写，`state-guard.py` hook 校验 |
+| `logs/` | 运行日志（`{module}-run-log.md`） | hook 脚本自动追加 |
 | `scripts/` | 运行工具（`state-guard.py`、自定义 linter 等跨平台脚本） | meta skill 写入 |
 | `tmp/` | 非 Plan 上下文持久化（`truth_source` 纯文本需求、GitHub Issue 抓取结果等） | workflow 在启动时写入，编码期间读取 |
 | `manifests/` | 黄金清单（`*.golden.yaml`，翻译类项目） | `build_golden_manifest.py` 生成 |

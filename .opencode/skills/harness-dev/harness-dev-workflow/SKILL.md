@@ -63,14 +63,6 @@ description: >-
 - `plan_list.length == 1` → 单 Plan 执行,加载 `references/workflow-single-plan.md`
 - `plan_list.length > 1` → 多 Plan 执行(worktree 隔离 + 串行/并发可选),加载 `references/workflow-multi-plan.md`
 
-## 执行上下文
-
-@./references/workflow-single-plan.md
-@./references/workflow-multi-plan.md
-@./references/fixing-loop.md
-@./references/phase-state-machine.md
-@./references/state-schema.md
-
 ## 禁止事项
 
 1. ❌ 修改 Plan / 测试文件来"通过"(含删除失败测试)

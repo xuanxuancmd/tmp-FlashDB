@@ -25,6 +25,8 @@ permission:
     "python *": "allow"
     "python3": "allow"
     "python3 *": "allow"
+    "node": "allow"
+    "node *": "allow"
     "cargo check": "allow"
     "cargo check *": "allow"
     "cargo build": "allow"

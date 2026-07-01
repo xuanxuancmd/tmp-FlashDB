@@ -12,9 +12,8 @@
 └── references/
     ├── workflow-single-plan.md           # 单 Plan 执行流程（主 Agent 编排，无 worktree）
     ├── workflow-multi-plan.md            # 多 Plan 编排（worktree 隔离 + 串行/并发可选）
-    ├── fixing-loop.md                    # Fixing 阶段（主 Agent 拉起 executor mode=fix）
-    ├── phase-state-machine.md            # Phase 状态机表 + 刷新时机表
-    └── state-schema.md                   # 统一 state.json schema + 三种 state 角色
+    ├── fixing-loop.md                    # Fixing 阶段通用权威（主 Agent 拉起 executor mode=fix）
+    └── state-schema.md                   # 统一 state.json schema + 状态机 + 三层一致性 + 断点续传
 ```
 
 ## 模板文件索引
@@ -24,9 +23,8 @@
 | 本文件 SKILL.md | `.opencode/skills/{skill_name}/SKILL.md` | 薄入口（职责+原则+输入+预检+模式判定+禁止事项） |
 | `workflow-single-plan.md` | `references/workflow-single-plan.md` | 单 Plan 执行流程 |
 | `workflow-multi-plan.md` | `references/workflow-multi-plan.md` | 多 Plan 编排（串行/并发可选） |
-| `fixing-loop.md` | `references/fixing-loop.md` | Fixing 阶段 |
-| `phase-state-machine.md` | `references/phase-state-machine.md` | Phase 状态机 |
-| `state-schema.md` | `references/state-schema.md` | State schema |
+| `fixing-loop.md` | `references/fixing-loop.md` | Fixing 阶段通用权威（循环流程 + issues 分类 + evidence 消费 + 终止处理） |
+| `state-schema.md` | `references/state-schema.md` | State 单一权威（Schema + stage 流转 + 状态机刷新时机 + 三层一致性 + 断点续传） |
 
 ## 模板变量说明
 
@@ -41,7 +39,7 @@
 ## 生成规则
 
 1. SKILL.md 薄入口模板段写入 `.opencode/skills/{skill_name}/SKILL.md`（OpenCode）或 `.claude/skills/{skill_name}/SKILL.md`（Claude Code）
-2. 5 个 reference 模板文件写入 `.opencode/skills/{skill_name}/references/`（或 `.claude/skills/{skill_name}/references/`）
+2. 4 个 reference 模板文件写入 `.opencode/skills/{skill_name}/references/`（或 `.claude/skills/{skill_name}/references/`）
 3. SKILL.md 行数 ≤80 行（薄入口）
 4. 各 references 文件行数无硬性限制，但建议单个文件 ≤180 行
 5. 占位符替换：meta skill 在 Step 6 生成时**必须完成所有 {变量} 替换**，生成的文件不含未替换占位符
@@ -118,14 +116,6 @@ description: >-
 
 - `plan_list.length == 1` → 单 Plan 执行,加载 `references/workflow-single-plan.md`
 - `plan_list.length > 1` → 多 Plan 执行(worktree 隔离 + 串行/并发可选),加载 `references/workflow-multi-plan.md`
-
-## 执行上下文
-
-@./references/workflow-single-plan.md
-@./references/workflow-multi-plan.md
-@./references/fixing-loop.md
-@./references/phase-state-machine.md
-@./references/state-schema.md
 
 ## 禁止事项
 

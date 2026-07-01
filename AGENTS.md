@@ -10,11 +10,12 @@ FlashDB 源码参考：`C:\wanglong\temp\FlashDB`。
 
 | 子目录 | 说明 |
 |--------|------|
+| `features/` | BDD Gherkin 场景（`*.feature`）— `harness-bdd-design` skill 生成 |
+| `e2e/` | e2e 测试用例设计 — `generate-e2e-test-guide` skill 追加 |
 | `state/` | **核心** workflow 持久化状态（断点续传） |
-| `scripts/` | 校验脚本（`state-guard.py`、`loop-orchestrator.ts` 等，跨平台） |
+| `scripts/` | 校验脚本（`state-guard.py` 等，跨平台） |
 | `logs/` | **核心** 运行日志（由 hook 脚本自动追加） |
 | `evidence/` | 校验输出产物（`*.json`） |
-| `features/` | BDD Gherkin 场景（`*.feature`） — `harness-bdd-design` skill 生成 |
 
 完整说明见 `.opencode/harness/README.md`。
 

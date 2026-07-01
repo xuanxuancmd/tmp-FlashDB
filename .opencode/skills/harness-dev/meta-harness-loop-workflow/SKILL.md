@@ -170,7 +170,7 @@ description: >-
 
 ### Step 6: 生成编码闭环 Skill
 
-按 `references/skill-templates/workflow/` 目录下的 6 个独立模板文件生成 workflow Skill：
+按 `references/skill-templates/workflow/` 目录下的 5 个独立模板文件生成 workflow Skill：
 
 | 模板文件 | 生成目标 |
 |---------|---------|
@@ -178,7 +178,6 @@ description: >-
 | `workflow-single-plan.md` | `references/workflow-single-plan.md` |
 | `workflow-multi-plan.md` | `references/workflow-multi-plan.md` |
 | `fixing-loop.md` | `references/fixing-loop.md` |
-| `phase-state-machine.md` | `references/phase-state-machine.md` |
 | `state-schema.md` | `references/state-schema.md` |
 
 | 平台 | 写入路径 |
@@ -292,15 +291,41 @@ description: >-
 
 `harness-validator.ts` 已存在则覆盖（保持一致）
 
-#### 8.2: state-guard.py 部署（所有平台通用）
+#### 8.2: 脚本部署（所有平台通用）
 
 **前置条件**：Step 3.1 已创建 `{.opencode|.claude}/harness/scripts/` 核心子目录（若缺失则报错，**不要在此步骤内自行创建**，应回头修复 Step 3）。
 
-**部署动作**：将 `references/scripts/state-guard-template.py` **复制**（不是重命名，保留模板）到 `{.opencode|.claude}//harness/scripts/state-guard.py`。
+**部署两个脚本**到 `{.opencode|.claude}/harness/scripts/`：
 
-若 `{.opencode|.claude}//harness/scripts/state-guard.py` 已存在，直接覆盖写入（保持与模板一致）。
+| 脚本 | 模板来源 | 运行方式 | 用途 |
+|------|---------|---------|------|
+| `state-guard.py` | `references/scripts/state-guard-template.py` | `python state-guard.py {path}` | schema 校验 + 重试上限 |
+| `workflow-todo-write.js` | `references/scripts/workflow-todo-write.js` | `node workflow-todo-write.js {path}` | todo 计算 + 运行日志追加 |
 
-#### 8.3: Claude Code 自动注册阻断守卫（仅 Claude Code 平台）
+**复制**（不是重命名，保留模板）。若目标已存在，直接覆盖写入（保持与模板一致）。
+
+> `state-guard.py` 用 python（与 hook 调用方式一致）；`workflow-todo-write.js` 用 node（与 GSD 脚本体系一致，node 在系统 PATH）。两个脚本都被 hook 自动调用，也支持 AI 手动调用（降级场景）。
+>
+> **eval 脚本**（`eval/eval-workflow-todo.js`）是 meta skill 自身的验证工具，验证 `workflow-todo-write.js` 的 todo 计算逻辑正确性（6 场景端到端断言）。**不部署**到 `harness/scripts/`——它属于 meta skill 开发验证，不属于 workflow 运行时。运行方式：`node .opencode/skills/harness-dev/meta-harness-loop-workflow/eval/eval-workflow-todo.js`。
+
+#### 8.3: Hooks 可用性检测 + Workflow 模板适配
+
+**检测 hooks 是否可用**（仅 OpenCode 平台）：
+
+1. 检查 `.opencode/opencode.json` 的 `plugin` 数组是否含 `loop-governance.ts`
+2. 检查 `.opencode/plugins/loop-governance.ts` 文件是否存在
+3. 两者均满足 → hooks 可用；否则 → hooks 不可用
+
+**根据检测结果适配 workflow 模板**：
+
+| hooks 可用性 | workflow 模板的"调度规则"段（TodoWrite 驱动） |
+|-------------|------------------------------------------|
+| **可用** | "调度规则"段写"todo 由 hook 自动计算，收到 `[TODO]` 提示后调 TodoWrite"（当前模板默认内容，无需修改） |
+| **不可用** | "调度规则"段追加降级指令："hooks 不可用时，每次写 state.json 后**必须**执行 `node .opencode/harness/scripts/workflow-todo-write.js {path}`。脚本对主 state（`{module}-workflow-state.json`）输出 `[TODO]` 块（结构化 todos[] JSON），AI 据此调用 TodoWrite 工具刷新；对 per-plan state 只输出 `[LOG]`（仅记日志，不刷 todo）" |
+
+> 降级指令通过条件占位符注入：模板"调度规则"段保留默认内容，meta skill 在生成时若检测到 hooks 不可用，则在"调度规则"段末尾追加降级指令段。
+
+#### 8.4: Claude Code 自动注册阻断守卫（仅 Claude Code 平台）
 
 若 `detected_platforms` 包含 `"claudecode"`，执行以下两步：
 
@@ -346,4 +371,4 @@ description: >-
 6. ❌ 生成的 executor agent 的 bash permission 不得包含与 target_lang 无关的编译命令
 7. ❌ 生成的 executor agent 不得缺少 `task` 权限的 `"*": "deny"`（架构硬约束：executor 禁止拉起 sub-agent）
 8. ❌ 生成的 executor/evaluator agent 不得缺少 `read`/`list`/`skill`/`todowrite`/`external_directory` 权限（sub-agent 需读 Plan、加载 skill、TodoWrite、读项目外源码）
-9. ❌ 生成的 evaluator/review agent 的 bash permission 不得缺 `"python": "allow"` + `"python *": "allow"`（需全局允许所有 python 脚本执行，用于运行 harness 校验脚本）
+9. ❌ 生成的 evaluator/review agent 的 bash permission 不得缺 `"python": "allow"` + `"python *": "allow"` + `"node": "allow"` + `"node *": "allow"`（需全局允许 python 和 node 脚本执行，用于运行 harness 校验脚本 state-guard.py 和 workflow-todo-write.js）
