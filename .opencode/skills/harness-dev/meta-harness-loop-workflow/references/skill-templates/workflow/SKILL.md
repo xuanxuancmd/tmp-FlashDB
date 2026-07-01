@@ -13,7 +13,9 @@
     ├── workflow-single-plan.md           # 单 Plan 执行流程（主 Agent 编排，无 worktree）
     ├── workflow-multi-plan.md            # 多 Plan 编排（worktree 隔离 + 串行/并发可选）
     ├── fixing-loop.md                    # Fixing 阶段通用权威（主 Agent 拉起 executor mode=fix）
-    └── state-schema.md                   # 统一 state.json schema + 状态机 + 三层一致性 + 断点续传
+    └── state-schema.md                   # 统一 state.json schema + 名词映射 + 三层一致性 + 断点续传
+.opencode/harness/
+└── workflow.yaml                         # 工作流定义（stage 顺序 + on_failure 跳转，状态转移规则单一权威）
 ```
 
 ## 模板文件索引
@@ -21,20 +23,22 @@
 | 模板文件 | 生成目标 | 说明 |
 |---------|---------|------|
 | 本文件 SKILL.md | `.opencode/skills/{skill_name}/SKILL.md` | 薄入口（职责+原则+输入+预检+模式判定+禁止事项） |
+| `workflow.yaml.example` | `.opencode/harness/workflow.yaml` | 工作流定义（stage 顺序 + on_failure，状态转移规则的单一权威） |
 | `workflow-single-plan.md` | `references/workflow-single-plan.md` | 单 Plan 执行流程 |
-| `workflow-multi-plan.md` | `references/workflow-multi-plan.md` | 多 Plan 编排（串行/并发可选） |
+| `workflow-multi-plan.md` | `references/workflow-multi-plan.md` | 多 Plan 编排（串行/并发可选 + merge 行为专节） |
 | `fixing-loop.md` | `references/fixing-loop.md` | Fixing 阶段通用权威（循环流程 + issues 分类 + evidence 消费 + 终止处理） |
-| `state-schema.md` | `references/state-schema.md` | State 单一权威（Schema + stage 流转 + 状态机刷新时机 + 三层一致性 + 断点续传） |
+| `state-schema.md` | `references/state-schema.md` | State 单一权威（Schema + 名词映射 + 刷新时机 + 三层一致性 + 断点续传） |
 
 ## 模板变量说明
 
 | 变量 | 来源 | 注入位置 | 示例值 |
 |------|------|---------|--------|
 | `{skill_name}` | 用户输入 | SKILL.md frontmatter + 标题 | `harness-dev-workflow` |
-| `{module_name}` | 运行时参数 | state schema 注释 | `connect-runtime` |
+| `{module_name}` | 运行时参数 | state schema 注释 + workflow.yaml | `connect-runtime` |
 | `{coding_skills}` | Step 4.1 coding 阶段 | executor agent 模板（烘焙进 agent 定义） | markdown 表格 |
-| `{review_skills}` | Step 4.1 reviewing 阶段 | workflow-single-plan.md + workflow-multi-plan.md 的检视段 | markdown 表格 |
-| `{fixing_skills}` | Step 4.1 fixing 阶段 | fixing-loop.md（可选，若为空则 Fixing 不加载自检） | markdown 表格 |
+| `{incremental_reviewing_skill}` | Step 4.1 incremental_reviewing 子类 | workflow.yaml local-stages review 项 | skill 名 |
+| `{full_reviewing_skill}` | Step 4.1 full_reviewing 子类 | workflow.yaml global-stages full_review 项 | skill 名 |
+| `{fixing_skill}` | Step 4.1 fixing 阶段 | workflow.yaml optional-stages fix 项 | skill 名 |
 
 ## 生成规则
 
@@ -105,12 +109,15 @@ description: >-
 
 每次启动时执行,任一失败 → BLOCKED:
 
-1. **State 续传**:Read `.opencode/harness/state/{module}-workflow-state.json`
+1. **workflow.yaml 可读**:Read `.opencode/harness/workflow.yaml`
+   - 不存在 → BLOCKED（状态转移规则未定义，脚本无法工作）
+   - 存在 → 解析 local-stages / global-stages / optional-stages，作为后续 stage 推进的权威
+2. **State 续传**:Read `.opencode/harness/state/{module}-workflow-state.json`
    - 不存在 → 全新启动
    - 存在且 status="running" → 按 `references/state-schema.md` 的"状态恢复"段恢复（**多 Plan 场景需核对三层状态**: 主 state + 各 executor state + worktree 一致性）
    - 存在且 status="blocked" → `question()` 上报
    - 存在且 status="completed" → `question("已完成，是否重启?")`
-2. **Plan 可用**:`plan_list` 为空 → 从 `requirement_text` 构建 plan_list;也为空 → BLOCKED
+3. **Plan 可用**:`plan_list` 为空 → 从 `requirement_text` 构建 plan_list;也为空 → BLOCKED
 
 ## 执行模式判定
 

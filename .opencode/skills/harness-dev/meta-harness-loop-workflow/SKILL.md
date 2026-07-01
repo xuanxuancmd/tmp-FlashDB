@@ -122,15 +122,16 @@ description: >-
 | 阶段 | 识别关键词（description） | 示例 Skill | 注入占位符 | 注入目标 |
 |------|------------------------|-----------|-----------|---------|
 | **coding** | "编码"、"翻译"、"BDD"、"step definition"、"cucumber"、"实现"、"translate"、"mapping"、"migration" | `java-translate-to-rust`、`harness-bdd-coding` | `{coding_skills}` | executor agent（烘焙进 agent 定义） |
-| **reviewing** | "增量"、"review"、"代码检视"、"code-review"、"全量"、"E2E"、"full review" | `harness-code-review`、`harness-translate-code-review`、`harness-run-e2e-test` | `{review_skills}` | workflow skill（主 Agent 编排时加载） |
-| **evaluating** | "评估"、"对抗性审查"、"evaluator"（仅 Plan 层使用，Task 层无评估环节） | — | 内置 skill | workflow skill（主 Agent 编排时加载） |
-| **fixing** | "修复自检"、"fix-self-check"、"修复健康"、"self-check"（修复阶段的思维方式门禁） | `fix-self-check` | `{fixing_skills}` | workflow skill（主 Agent fixing 阶段加载） |
+| **incremental_reviewing** | "增量"、"incremental"、"review"、"代码检视"、"code-review" | `harness-code-review`、`harness-translate-code-review` | `{incremental_reviewing_skill}` | workflow.yaml local-stages review 项 |
+| **full_reviewing** | "全量"、"full review"、"E2E"、"端到端" | `harness-run-e2e-test` | `{full_reviewing_skill}` | workflow.yaml global-stages full_review 项 |
+| **evaluating** | "评估"、"对抗性审查"、"evaluator"（仅 Plan 层使用，Task 层无评估环节） | — | 内置 skill | workflow.yaml local-stages evaluate 项 |
+| **fixing** | "修复自检"、"fix-self-check"、"修复健康"、"self-check"（修复阶段的思维方式门禁） | `fix-self-check` | `{fixing_skill}` | workflow.yaml optional-stages fix 项 |
 
 **注意**：
 - executor agent 只烘焙 `{coding_skills}`，不烘焙检视/评估/修复编排技能（executor 是纯执行者，不编排）
-- 主 Agent 在 workflow 的对应阶段自行加载 `{review_skills}` / `{fixing_skills}`
+- 主 Agent 在 workflow 的对应阶段自行加载检视/修复编排技能
 - `evaluating` 阶段使用 meta skill 生成的 `harness-code-evaluator` 编排 skill，无外部 skill 注入
-- 原 `incremental_reviewing` 和 `full_reviewing` 合并为 `reviewing` 阶段，由主 Agent 拉起 code-review-agent，检视范围（增量/全量）由 `review_path` 参数决定
+- `reviewing` 拆分为 **incremental**（local-stages，增量检视）和 **full**（global-stages，全量/E2E 检视）两个子类，分别注入 workflow.yaml 的不同 stage
 
 ### Step 5: 展示方案给用户审阅
 
@@ -144,14 +145,36 @@ description: >-
 - **构建命令**: `{build_cmd}` / `{test_cmd}` / `{lint_cmd}`
 - **Harness 目录**: `{harness_dir}`
 
-### 阶段 Skill 映射（注入 workflow 模板）
+### 阶段 Skill 映射（注入 workflow.yaml + executor agent）
 
-| Workflow 阶段 | Skill / Agent | 执行者 | 备注 |
-|--------------|--------------|--------|------|
-| coding | {coding_skills} | executor agent（烘焙） | executor 纯编码，不编排 |
-| reviewing | {review_skills} | 主 Agent 加载编排 | 主 Agent 拉起 code-review-agent sub-agent |
-| evaluating（plan 级） | harness-code-evaluator | 主 Agent 加载编排 | 由本流程生成，主 Agent 拉起 code-evaluator-agent sub-agent |
-| fixing | {fixing_skills} | 主 Agent 加载 | 主 Agent 拉起 executor(mode=fix) + fix-self-check 思维门禁 |
+| Workflow 阶段 | Skill / Agent | 执行者 | yaml 注入位置 | 备注 |
+|--------------|--------------|--------|-------------|------|
+| coding | {coding_skills} | executor agent（烘焙） | local-stages: code | executor 纯编码，不编排 |
+| incremental review | {incremental_reviewing_skill} | 主 Agent 加载编排 | local-stages: review | 主 Agent 拉起 code-review-agent（增量检视） |
+| evaluating（plan 级） | harness-code-evaluator | 主 Agent 加载编排 | local-stages: evaluate | 由本流程生成 |
+| full review | {full_reviewing_skill} | 主 Agent 加载编排 | global-stages: full_review | 全量/E2E 检视 |
+| fixing | {fixing_skill} | 主 Agent 加载 | optional-stages: fix | 主 Agent 拉起 executor(mode=fix) + fix-self-check |
+
+### 即将生成的 workflow.yaml 预览
+
+```yaml
+local-stages:
+  - name: code
+    skill: {coding_skill}
+  - name: review
+    skill: {incremental_reviewing_skill}
+    on_failure: fix
+  - name: evaluate
+    skill: harness-code-evaluator
+    on_failure: fix
+global-stages:
+  - name: full_review
+    skill: {full_reviewing_skill}
+    on_failure: fix
+optional-stages:
+  fix:
+    skill: {fixing_skill}
+```
 
 ### 即将生成的文件
 
@@ -170,7 +193,20 @@ description: >-
 
 ### Step 6: 生成编码闭环 Skill
 
-按 `references/skill-templates/workflow/` 目录下的 5 个独立模板文件生成 workflow Skill：
+按 `references/skill-templates/workflow/` 目录下的模板文件生成 workflow Skill：
+
+#### 6.0 实例化 workflow.yaml
+
+读 `references/skill-templates/workflow/workflow.yaml.example` 模板，用 Step 4 扫描结果替换占位符：
+- `{module_name}` → Step 2 推断的 module 名
+- `{coding_skill}` → Step 4.1 coding 阶段 skill 名
+- `{incremental_reviewing_skill}` → Step 4.1 incremental_reviewing 子类 skill 名
+- `{full_reviewing_skill}` → Step 4.1 full_reviewing 子类 skill 名（为空则删除 global-stages 项）
+- `{fixing_skill}` → Step 4.1 fixing 阶段 skill 名（为空则 optional-stages fix 项 skill 留空）
+
+写入 `.opencode/harness/workflow.yaml`（若已存在则覆盖）。**此文件是状态转移规则的单一权威来源，后续脚本和文档均依赖它。**
+
+#### 6.1 生成 workflow Skill 文件
 
 | 模板文件 | 生成目标 |
 |---------|---------|
@@ -185,7 +221,7 @@ description: >-
 | OpenCode | `.opencode/skills/harness-dev/{skill_name}/SKILL.md` + `.opencode/skills/harness-dev/{skill_name}/references/*.md` |
 | Claude Code | `.claude/skills/{skill_name}/SKILL.md` + `.claude/skills/{skill_name}/references/*.md` |
 
-#### 6.1 参数注入（替换模板中的占位符）
+#### 6.2 参数注入（替换模板中的占位符）
 
 由 meta skill 在生成时**直接替换**模板中的 `{变量}` 占位符：
 
@@ -195,30 +231,32 @@ description: >-
 |--------|--------|------|
 | `{skill_name}` | 必选参数 | `harness-dev-workflow` |
 
-**B 类：阶段占位符**（从 Step 4 阶段分类结果构建，注入 references/workflow-*.md）
+**B 类：阶段占位符**（从 Step 4 阶段分类结果构建，注入 workflow.yaml + executor agent）
 
 | 占位符 | 值来源 | 注入位置 | 注入形态 |
 |--------|--------|---------|---------|
 | `{coding_skills}` | Step 4.1 coding 阶段 Skill 列表 | executor agent 模板（烘焙进 agent 定义） | markdown 表格：`\| 技能 \| 用途 \|` |
-| `{review_skills}` | Step 4.1 reviewing 阶段 Skill 列表 | workflow-single-plan.md + workflow-multi-plan.md 的检视段 | markdown 表格：`\| 技能 \| 用途 \|` |
-| `{fixing_skills}` | Step 4.1 fixing 阶段 Skill 列表 | fixing-loop.md（可选，若为空则 Fixing 不加载自检） | markdown 表格 |
+| `{incremental_reviewing_skill}` | Step 4.1 incremental_reviewing 子类 | workflow.yaml local-stages review 项的 skill 字段 | skill 名 |
+| `{full_reviewing_skill}` | Step 4.1 full_reviewing 子类 | workflow.yaml global-stages full_review 项的 skill 字段 | skill 名 |
+| `{fixing_skill}` | Step 4.1 fixing 阶段 | workflow.yaml optional-stages fix 项的 skill 字段 | skill 名 |
 
-> 若某阶段的 Skill 列表为空（如项目没有 E2E Skill），则对应占位符替换为"无（此阶段跳过）"，不删除行。
+> 若某阶段的 Skill 列表为空（如项目没有 E2E Skill），则对应占位符替换为空字符串或删除对应 yaml stage 项，不破坏 yaml 结构。
 
 **替换规则**：
 - A 类：meta skill 生成 SKILL.md 时**必须完成替换**
-- B 类：meta skill 生成 references/workflow-*.md 时**必须完成替换**
+- B 类：meta skill 生成 workflow.yaml + executor agent 时**必须完成替换**
 - 生成的文件**不含未替换占位符**
 
-#### 6.2 阶段占位符生成（按 Step 4 分类结果）
+#### 6.3 阶段占位符生成（按 Step 4 分类结果）
 
 使用 Step 4.1 的阶段扫描结果，依次生成各阶段占位符内容：
 
 | 占位符 | 生成来源 | 生成规则 |
 |--------|---------|---------|
 | `{coding_skills}` | Step 4.1 coding 阶段 Skill 列表 | 每个 Skill 一行：`| <skill_name> | <description 摘要> |` |
-| `{review_skills}` | Step 4.1 reviewing 阶段 Skill 列表 | 每个 Skill 一行：`| <skill_name> | <description 摘要> |` |
-| `{fixing_skills}` | Step 4.1 fixing 阶段 Skill 列表 | 每个 Skill 一行：`| <skill_name> | <description 摘要> |`，为空则 fixing-loop.md 中不加载自检 |
+| `{incremental_reviewing_skill}` | Step 4.1 incremental_reviewing 子类 | 取首个匹配的 skill 名 |
+| `{full_reviewing_skill}` | Step 4.1 full_reviewing 子类 | 取首个匹配的 skill 名 |
+| `{fixing_skill}` | Step 4.1 fixing 阶段 Skill 列表 | 取首个匹配的 skill 名，为空则 yaml 中 fix 项 skill 留空 |
 
 ### Step 7: 生成编码执行 Agent + 评估 Agent + 编排 Skill
 
@@ -299,8 +337,10 @@ description: >-
 
 | 脚本 | 模板来源 | 运行方式 | 用途 |
 |------|---------|---------|------|
-| `state-guard.py` | `references/scripts/state-guard-template.py` | `python state-guard.py {path}` | schema 校验 + 重试上限 |
-| `workflow-todo-write.js` | `references/scripts/workflow-todo-write.js` | `node workflow-todo-write.js {path}` | todo 计算 + 运行日志追加 |
+| `state-guard.py` | `references/scripts/state-guard-template.py` | `python state-guard.py {path}` | schema 校验 + 重试上限（VALID_STAGES 从 workflow.yaml 动态读取） |
+| `workflow-todo-write.js` | `references/scripts/workflow-todo-write.js` | `node workflow-todo-write.js {path}` | todo 计算 + 运行日志追加（stage 顺序从 workflow.yaml 读取） |
+
+> **依赖 workflow.yaml**：两个脚本均读取 `.opencode/harness/workflow.yaml` 推导 stage 枚举和顺序。部署前**必须确认 Step 6.0 已生成 workflow.yaml**，否则脚本无法工作。
 
 **复制**（不是重命名，保留模板）。若目标已存在，直接覆盖写入（保持与模板一致）。
 
@@ -321,7 +361,7 @@ description: >-
 | hooks 可用性 | workflow 模板的"调度规则"段（TodoWrite 驱动） |
 |-------------|------------------------------------------|
 | **可用** | "调度规则"段写"todo 由 hook 自动计算，收到 `[TODO]` 提示后调 TodoWrite"（当前模板默认内容，无需修改） |
-| **不可用** | "调度规则"段追加降级指令："hooks 不可用时，每次写 state.json 后**必须**执行 `node .opencode/harness/scripts/workflow-todo-write.js {path}`。脚本对主 state（`{module}-workflow-state.json`）输出 `[TODO]` 块（结构化 todos[] JSON），AI 据此调用 TodoWrite 工具刷新；对 per-plan state 只输出 `[LOG]`（仅记日志，不刷 todo）" |
+| **不可用** | "调度规则"段追加降级指令："hooks 不可用时，每次写 state.json 后**必须**执行 `node .opencode/harness/scripts/workflow-todo-write.js {path}`。脚本对主 state（`{module}-workflow-state.json`）输出纯 `todos[]` JSON 数组到 stdout，AI 据此调用 TodoWrite 工具刷新；对 per-plan state stdout 为空（仅记日志，不刷 todo）" |
 
 > 降级指令通过条件占位符注入：模板"调度规则"段保留默认内容，meta skill 在生成时若检测到 hooks 不可用，则在"调度规则"段末尾追加降级指令段。
 

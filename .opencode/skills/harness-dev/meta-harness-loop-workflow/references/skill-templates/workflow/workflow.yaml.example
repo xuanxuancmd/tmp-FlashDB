@@ -1,0 +1,68 @@
+# workflow.yaml — 工作流定义（状态转移规则的单一权威来源）
+#
+# 本文件定义 workflow 的 stage 顺序和失败跳转规则。
+# 脚本（workflow-todo-write.js / state-guard.py）读取本文件动态推导：
+#   - todo 项的 stage 名和顺序
+#   - state.json 的合法 stage 枚举
+#   - 哪些 stage 触发修复（on_failure 指向 optional-stages）
+#
+# 命名约定：yaml 用名词（stage 是工作项），state.json 用动名词（state 是运行时状态）。
+#   名词→动名词映射表（脚本内置，属允许硬编码）：
+#     code → coding | review → reviewing | evaluate → evaluating | fix → fixing
+#     global-stages name → name 本身（无映射）
+#     （local 末项通过）→ stage_completed（内置，无对应 yaml stage）
+#     （终态）→ completed / blocked
+#
+# stage 动作类型（二选一）：
+#   skill: 主 Agent 加载并执行该 Skill，Skill 内部指导主 Agent 派发 sub-agent
+#   agent: 主 Agent 直接派发该 sub-Agent（skill 已烘焙在 agent 定义中）
+#
+# on_failure 语义：值为目标 stage 名。
+#   - "blocked"          → 终态（无 skill，直接终止，plan 停止 + question 上报）
+#   - optional-stage 名  → 跳转该 optional-stage 执行（修完回 trigger_stage）
+#   - 省略               → 默认 blocked
+#   - 匹配不上           → 记日志 + 默认 blocked
+#
+# merge 不在此处定义——merge 是主 Agent 检测所有 plan stage_completed 后的内置编排动作
+# （见 workflow-multi-plan.md 的 merge 行为专节）。
+
+version: 1
+module: {module_name}
+
+# ── 单 plan 流程 ──────────────────────────────────────────────
+# 数组顺序 = 执行顺序，成功自动进下一项。
+# local 末项通过 → state.stage = stage_completed（内置状态）
+# 多 plan：所有 plan stage_completed → 主 Agent 自动 merge → global-stages
+# 单 plan：stage_completed → 直接进入 global-stages（无 merge）
+local-stages:
+  - name: code
+    agent: code-executor-agent      # coding skill 已烘焙在 executor 定义中
+    # on_failure 省略 → 默认 blocked（编码失败直接阻断）
+
+  - name: review
+    skill: {incremental_reviewing_skill}
+    on_failure: fix         # 检视失败 → 跳转 optional-stage "fix"
+
+  - name: evaluate
+    skill: harness-code-evaluator
+    on_failure: fix         # 评估失败 → 跳转 optional-stage "fix"
+    # evaluate 通过 → stage_completed
+
+# ── 全局收尾环节 ──────────────────────────────────────────────
+# 所有 plan merge 完成后执行（单 plan 也执行，单 plan 无 merge 直接进入）。
+# global-stages name 的 state 值 = name 本身（无名词→动名词映射）。
+# 末项完成 → state.stage = completed
+global-stages:
+  - name: review
+    skill: {full_reviewing_skill}
+    on_failure: fix
+
+# ── 可选环节（被 on_failure 引用，不在主流程顺序中）──────────
+# key = stage 名（名词），对应 state "fixing"。
+# 修完自动回到 trigger_stage（state.fixing.trigger_stage 记录，状态机内置行为）。
+# fix 失败 = 本轮修复无解 → blocked 上报。
+# 总修复轮次由 trigger_stage 的 retry 上限控制（review 3 轮 / evaluate 5 轮，硬编码）。
+optional-stages:
+  fix:
+    agent: code-executor-agent      # fixing skill 由主 Agent 在 fixing-loop 流程中加载
+    # on_failure 省略 → 默认 blocked

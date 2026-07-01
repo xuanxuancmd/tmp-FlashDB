@@ -20,9 +20,12 @@ import path from "path"
  *    - exit 1  → 🛑 阻断（schema 损坏 / 旧 schema 重试超限）
  *    - exit 2  → 🛑 阻断（新 schema 任务尝试上限）
  * 2. state.json 写入后自动运行 workflow-todo-write.js（todo 计算 + 日志追加）
- *    - 日志写入文件（副作用，不回传 Agent）
- *    - 仅对主 state（{module}-workflow-state.json）输出 [TODO]（脚本内部 isMainState 判断）
- *      AI 据此调 TodoWrite 刷新；per-plan state 写入只记日志，不触发 todo 刷新
+ *    - 日志写入文件（副作用，不回传 Agent）：运行日志 + todo 调用记录
+ *    - 仅对主 state（{module}-workflow-state.json）输出纯 todos[] JSON 到 stdout，
+ *      hook 直接注入 tool output，AI 据此调 TodoWrite 刷新；
+ *      per-plan state 写入只记日志，stdout 为空，不触发 todo 刷新
+ *    - 依赖 .opencode/harness/workflow.yaml：脚本从中读取 stage 顺序、on_failure 跳转、
+ *      skill 映射，动态推导 todo 项（每 plan 1 项，不做全景投影）
  *
  * 降级机制：
  * - 本 hook 是"自动触发"层，依赖运行时支持 hooks
@@ -81,8 +84,9 @@ export const LoopGovernancePlugin: Plugin = async (ctx) => {
         }
 
         // ---- 1b. 运行 workflow-todo-write.js（todo 计算 + 日志追加）----
-        // 日志写入文件（副作用），仅主 state 输出 [TODO] 到 stdout（脚本内部 isMainState 判断）
+        // 日志写入文件（副作用），仅主 state 输出纯 todos[] JSON 到 stdout（脚本内部 isMainState 判断）
         // per-plan state 写入只记日志，stdout 为空，不触发主 Agent todo 刷新
+        // stdout 是纯 JSON 数组，直接注入 tool output，AI 据此调 TodoWrite
         const postWriteScript = path.join(scriptDir, "workflow-todo-write.js")
 
         const postProc = await $`node ${postWriteScript} ${filePath}`.nothrow()
@@ -90,8 +94,8 @@ export const LoopGovernancePlugin: Plugin = async (ctx) => {
         const postStderr = postProc.stderr.toString().trim()
 
         if (postOutput) {
-          // stdout 含 [LOG] 和 [TODO] 行，直接注入提示
-          output.output += `\n\n📋 ${postOutput}`
+          // stdout 是纯 todos[] JSON 数组，直接注入（不加前缀/提示语，避免噪声）
+          output.output += `\n${postOutput}`
         }
 
         if (postProc.exitCode !== 0) {
@@ -119,7 +123,8 @@ export const LoopGovernancePlugin: Plugin = async (ctx) => {
 2. **项目级唯一**：无论生成多少个 workflow，整个项目只保留一个 `loop-governance.ts`
 3. **覆盖策略**：已存在的 `loop-governance.ts` 直接覆盖（保持与模板一致）
 4. **配套脚本**：同时复制两个脚本到 `.opencode/harness/scripts/`：
-   - `state-guard.py`（从 `references/scripts/state-guard-template.py`）
-   - `workflow-todo-write.js`（从 `references/scripts/workflow-todo-write.js`）
+   - `state-guard.py`（从 `references/scripts/state-guard-template.py`）— 依赖 `.opencode/harness/workflow.yaml` 动态推导 VALID_STAGES
+   - `workflow-todo-write.js`（从 `references/scripts/workflow-todo-write.js`）— 依赖 `.opencode/harness/workflow.yaml` 读取 stage 顺序和 skill 映射
+   - **前置条件**：`.opencode/harness/workflow.yaml` 必须已生成（由 meta skill Step 6.0 实例化），否则两个脚本均无法工作
 5. **自动注册**：生成后**自动将** `.opencode/plugins/loop-governance.ts` 追加到 `.opencode/opencode.json` 的 `plugin` 数组（已存在则跳过，避免重复条目）
 6. **重启提示**：生成后提示用户重启 OpenCode 以加载/更新 plugin

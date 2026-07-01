@@ -2,12 +2,26 @@
 
 `plan_list.length > 1` 时，为每个 Plan 创建独立的 git worktree 并派发 `code-executor` sub-agent。
 
+> **stage 顺序由 `workflow.yaml` 的 local-stages / global-stages 数组定义**。本文件描述派发细节和 merge 行为，不重复 stage 顺序。
+
+## 完整流程
+
+```
+各 plan 各自走 local-stages（code → review → evaluate，按 yaml 数组）
+  → 各自 stage=stage_completed
+  → wait-for-all 屏障（同 Wave 所有 plan stage_completed）
+  → 主 Agent 逐个 merge + 清理 worktree → plan_status=merged
+  → 所有 plan merged → 进入 global-stages
+  → global-stages 顺序执行（按 yaml 数组）
+  → global 末项通过 → stage=completed
+```
+
 ## 执行模式：有依赖 vs 无依赖
 
 | 模式 | 适用条件 | merge 时机 | worktree |
 |------|---------|-----------|---------|
-| **有依赖模式**（默认） | 存在任意 plan 依赖另一 plan 的代码产物 | 每个 plan `stage=stage_completed` 时立即 merge | 逐 plan 创建，后序从已 merge 的 main fork |
-| **无依赖模式** | 所有 plan 互不依赖 | 集中在 Phase 4 统一 merge | 可一次性创建，并行编码 |
+| **有依赖模式**（默认） | 存在任意 plan 依赖另一 plan 的代码产物 | 每个 plan `stage=stage_completed` 时立即 merge（见 merge 行为专节） | 逐 plan 创建，后序从已 merge 的 main fork |
+| **无依赖模式** | 所有 plan 互不依赖 | 集中在所有 plan stage_completed 后统一 merge | 可一次性创建，并行编码 |
 
 > 有依赖模式下，后序 Wave 的 plan 从已 merge 的 main fork worktree，确保看到前序代码。
 
@@ -15,12 +29,12 @@
 
 主 Agent **照脚本输出的 todo 推进**，无需自行计算 Wave 或调度顺序：
 
-1. 写初始主 state.json（`stage=coding`, `plan_status` 全 `running`）→ hook 自动调脚本 → 输出全 `pending` todo（首次全景）
-2. 调 `TodoWrite` 初始化 → 读 todo 找 `in_progress` 项 → 执行对应阶段派发（见下方"各阶段派发细节"）
-3. sub-agent 返回 → 刷新 plan state.json → hook 自动输出新 todo → 调 `TodoWrite` 更新
-4. 重复步骤 2-3，直到所有 plan merge 完成 + 末尾 "Workflow 完成" 项变 `in_progress` → 执行 Phase 4 + Self-Check
+1. 写初始主 state.json（`stage=coding`, `plan_status` 全 `running`）→ hook 自动调脚本 → 输出 todo（每 plan 1 项，Wave1 in_progress，其余 pending）
+2. 调 `TodoWrite` 初始化 → 读 todo 找 `in_progress` 项 → 执行对应 stage 派发（见下方"各 stage 派发细节"）
+3. sub-agent 返回 → 刷新 plan state.json → hook 自动输出新 todo（每 plan 仍 1 项）→ 调 `TodoWrite` 更新
+4. 重复步骤 2-3，直到所有 plan merge 完成 + todo 出现 global-stages 项 → 执行 global-stages + Self-Check
 
-> Wave 分组、依赖状态、stage 推进**全部由脚本**从 state.json + plan-flow.json 计算。AI 不参与调度计算，只按 todo 执行。
+> Wave 分组、依赖状态、stage 推进**全部由脚本**从 state.json + plan-flow.json + workflow.yaml 计算。AI 不参与调度计算，只按 todo 执行。todo 中每 plan 只占 1 项（当前活跃 stage 的动作），不做全景投影。
 
 ## Step 0: 初始化（强制执行，不可跳过）
 
@@ -53,13 +67,13 @@ git worktree add .worktrees/{plan_name} -b workflow/{plan_name}
 - worktree 路径在项目目录内（`.worktrees/`），sub-agent 无需 `external_directory` 权限
 - **确保 `.worktrees/` 已加入 `.gitignore`**
 - **有依赖模式**：逐 plan 创建，该 plan 闭环完成立即 merge + 删除 worktree，再为后序 plan 从已 merge 的 main 重新 fork
-- **无依赖模式**：可一次性创建所有 worktree（并行编码），Phase 4 统一 merge 后清理
+- **无依赖模式**：可一次性创建所有 worktree（并行编码），所有 plan stage_completed 后统一 merge 后清理
 
-## 各阶段派发细节
+## 各 stage 派发细节
 
-以下为每个 plan 的 per-plan 闭环各阶段（编码/检视/评估）的派发方式。各阶段**不是全局屏障**——某 plan 走完编码即进检视，不等同 Wave 其他 plan。
+以下为每个 plan 的 per-plan 闭环各阶段的派发方式。各阶段**不是全局屏障**——某 plan 走完编码即进检视，不等同 Wave 其他 plan。
 
-### 编码阶段（stage=coding）
+### local-stages: code（stage=coding）
 
 ```
 task(subagent_type="code-executor-agent",
@@ -74,10 +88,10 @@ task(subagent_type="code-executor-agent",
 ```
 
 - 同 Wave 内多个 plan 可加 `background=true` 并行派发
-- executor 返回后读该 plan state → `status=completed` → 刷新主 state `plan_status[plan]="completed"` + 该 plan state `stage=reviewing`
+- executor 返回后读该 plan state → `status=completed` → 刷新主 state `plan_status[plan]="completed"` + 该 plan state `stage` = local-stages 下一项
 - `status=blocked` → 该 plan 标记 BLOCKED，不影响同 Wave 其他 plan
 
-### 检视阶段（stage=reviewing）
+### local-stages: review（stage=reviewing）
 
 ```
 task(subagent_type="code-review-agent",
@@ -86,10 +100,10 @@ task(subagent_type="code-review-agent",
 ```
 
 读 summary.json：
-- `pass=true` → 刷新该 plan state `stage=evaluating`
-- `pass=false` → 提取 `blocking_issues[]` → 进入检视修复循环（引用 `fixing-loop.md`，max 3 轮）
+- `pass=true` → 按 yaml local-stages 顺序刷新该 plan state `stage` = 下一项
+- `pass=false` → 提取 `blocking_issues[]` → 查 yaml 的 `on_failure` → 跳转 fix（引用 `fixing-loop.md`，trigger_stage=reviewing，max 3 轮）
 
-### 评估阶段（stage=evaluating）
+### local-stages: evaluate（stage=evaluating）
 
 ```
 task(subagent_type="code-evaluator-agent",
@@ -102,39 +116,54 @@ task(subagent_type="code-evaluator-agent",
 
 读 JSON 报告：
 - `pass=true` → 刷新该 plan state `stage=stage_completed`
-- `pass=false` → 提取 `blocking_issues[]` → 进入评估修复循环（引用 `fixing-loop.md`，max 5 轮）
+- `pass=false` → 提取 `blocking_issues[]` → 查 yaml 的 `on_failure` → 跳转 fix（引用 `fixing-loop.md`，trigger_stage=evaluating，max 5 轮）
 
 ### 修复循环（per-plan，引用 fixing-loop.md）
 
 检视/评估未通过的 plan 独立进入修复循环，逻辑见 `fixing-loop.md`。同一 plan 的修复→重检视/重评估是串行的；不同 plan 的修复循环可并发。
 
-## Phase 4: merge + worktree 清理
+## merge 行为（主 Agent 内置编排动作）
 
-> - **有依赖模式**：各 plan 的 merge 已在其闭环 `stage=stage_completed` 时立即执行，Phase 4 仅做最终校验 + worktree 残留清理
-> - **无依赖模式**：所有 plan `stage=stage_completed` 后，集中在本 Phase 逐个 merge
+> merge **不在 `workflow.yaml` 中定义**——merge 是主 Agent 检测所有 plan `stage=stage_completed` 后的内置编排动作（依赖多 plan 状态，属 wait-for-all 屏障）。
 
-### 4.1 merge 到 main（仅无依赖模式执行）
+### wait-for-all 屏障
+
+主 Agent 检测**同 Wave 所有非 blocked plan** `stage=stage_completed` 后，才执行 merge。任一 plan 未到 stage_completed → 等待。
+
+### merge 命令
+
+满足屏障条件后，主 Agent 逐个执行：
 
 ```bash
-git merge workflow/{plan_name}
+git merge workflow/{plan_name}          # merge 到 main
+git worktree remove .worktrees/{plan_name}  # 清理 worktree
+git branch -d workflow/{plan_name}      # 删除分支
 ```
 
+- merge 完成 → 主 state `plan_status[plan]="merged"`
+- 所有 plan merged 后 → 进入 global-stages
+- **有依赖模式**：各 plan 的 merge 已在其 stage_completed 时立即执行（不等同 Wave），后序 Wave 的 plan 从已 merge 的 main fork worktree
+- **无依赖模式**：所有 plan stage_completed 后集中 merge
 - merge 冲突 → 主 Agent 直接解决；冲突复杂无法自动解决 → `question()` 上报用户
 
-### 4.2 清理 worktree（两种模式均执行）
-
-```bash
-git worktree remove .worktrees/{plan_name}
-git branch -d workflow/{plan_name}
-```
-
-### 4.3 BLOCKED Plan 的 worktree 处理
+### BLOCKED Plan 的处理
 
 - ❌ 不 merge（代码未通过检视/评估）
 - ❌ 不删除 worktree（保留现场供调试）
 - ✅ `question()` 上报用户，附 blocked-reports 路径
 
-## completing Self-Check
+## global-stages（所有 plan merge 完成后执行）
+
+所有 plan `plan_status=merged` 后，进入 global-stages。每个 global-stage 按 yaml 数组顺序执行：
+
+- 加载对应 skill，拉起 sub-agent
+- `pass=true` → 按 yaml global-stages 顺序刷新主 state `stage` = 下一项
+- `pass=false` → 查 yaml 的 `on_failure` → 跳转 fix
+- global 末项通过 → `stage=completed`
+
+> todo 中 plan 项消失，出现 global 项（`Global: {stage_name} — 派 {skill}`）。
+
+## Self-Check
 
 在刷新主 state `status=completed` 前，**回溯验证**：
 
@@ -142,7 +171,8 @@ git branch -d workflow/{plan_name}
 2. 每个 Plan 的编码 SUMMARY、检视报告、评估报告均存在
 3. 所有 Plan 已 merge 到 main（git log 确认）
 4. 所有 worktree 已清理（blocked 的保留现场除外）
-5. todo 末尾 "Workflow 完成" 项已 `completed`
+5. global-stages 全部通过
+6. todo 末尾 "Workflow 完成" 项已 `completed`
 
 **任一缺失 → 回退到缺失阶段重新执行，不标记 completed。**
 
@@ -164,6 +194,7 @@ git branch -d workflow/{plan_name}
 
 - ✅ 所有 Plan 已 merge 到 main
 - ✅ 所有 worktree 已清理
+- ✅ global-stages 全部通过
 - ✅ 最终构建测试: `{build_cmd}` pass / `{test_cmd}` pass
 
 ### 结果举证
