@@ -6,8 +6,11 @@
  * - 已完成项 content 冻结不改，只改 status=completed
  * - 初始每 plan 1 项 code [pending]，随推进增量增长（非全景投影）
  * - merge 不是 stage，不产生 todo 项
+ * - 支持自定义 stage（如 codecheck），验证动态推导正确性
+ * - max_rounds 从 config.toml 统一读取，所有 stage 共用同一个值
  *
- * 临时文件策略：写入 eval/.tmp/，运行后清理
+ * fixture 策略：workflow.yaml / config.toml / plan-flow.json 内置在 eval/fixtures/ 下，
+ * 不在脚本中动态生成。测试场景的 state.json 在脚本中构造（按场景定制）。
  *
  * Usage: node eval-workflow-todo.js [--quiet]
  * Exit: 0=全部通过, 1=有失败
@@ -18,45 +21,20 @@ const { execFileSync } = require("child_process");
 
 const EVAL_DIR = __dirname;
 const SCRIPT_PATH = path.join(EVAL_DIR, "..", "references", "scripts", "workflow-todo-write.js");
+const FIXTURES_DIR = path.join(EVAL_DIR, "fixtures");
 const TMP_DIR = path.join(EVAL_DIR, ".tmp");
 const MODULE = "testmod";
 
-const WORKFLOW_YAML = `version: 1
-module: ${MODULE}
+// 从 fixtures 读取固定配置
+const WORKFLOW_YAML = fs.readFileSync(path.join(FIXTURES_DIR, "workflow.yaml"), "utf-8");
+const CONFIG_TOML = fs.readFileSync(path.join(FIXTURES_DIR, "config.toml"), "utf-8");
+const PLAN_FLOW = JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, "plan-flow.json"), "utf-8"));
 
-local-stages:
-  - name: code
-    agent: code-executor-agent
-  - name: review
-    skill: harness-code-review
-    on_failure: fix
-  - name: evaluate
-    skill: harness-code-evaluator
-    on_failure: fix
-
-global-stages:
-  - name: review
-    skill: harness-run-e2e-test
-    on_failure: fix
-
-optional-stages:
-  fix:
-    agent: code-executor-agent
-`;
-
-const PLAN_FLOW = {
-  plans: [
-    { name: "plan1", path: "p1.md", depends_on: [] },
-    { name: "plan2", path: "p2.md", depends_on: ["plan1"] },
-    { name: "plan3", path: "p3.md", depends_on: ["plan1"] },
-    { name: "plan4", path: "p4.md", depends_on: ["plan2", "plan3"] },
-  ],
-};
-
-// content 片段常量
+// content 片段常量（与 fixture workflow.yaml 中的 stage/skill 对应）
 const CODE = "编码 — 派发 code-executor-agent sub-Agent";
+const CODECHECK = "codecheck — 加载并执行 Skill custom-codecheck-skill";
 const REVIEW = "检视 — 加载并执行 Skill harness-code-review";
-const EVAL = "评估 — 加载并执行 Skill harness-code-evaluator";
+const EVAL = "评估 — 派发 code-evaluator-agent sub-Agent";  // evaluate 改为 agent 直接派发
 const FIX = "修复 — 派发 code-executor-agent sub-Agent";
 const GLOBAL = "检视 — 加载并执行 Skill harness-run-e2e-test";
 
@@ -72,6 +50,7 @@ function setupScenarioDir(scenario, idx) {
   const stateDir = path.join(harnessDir, "state");
   fs.mkdirSync(stateDir, { recursive: true });
   fs.writeFileSync(path.join(harnessDir, "workflow.yaml"), WORKFLOW_YAML, "utf-8");
+  fs.writeFileSync(path.join(harnessDir, "config.toml"), CONFIG_TOML, "utf-8");
   if (!scenario.noPlanFlow) {
     fs.writeFileSync(path.join(stateDir, `${MODULE}-plan-flow.json`), JSON.stringify(PLAN_FLOW), "utf-8");
   }
@@ -117,9 +96,11 @@ function assertTodos(todos, expected, scenarioName) {
 
 // ============================================================
 // 测试场景
+// max_rounds = 3（从 config.toml 统一读取，所有 stage 共用）
 // ============================================================
 
 const scenarios = [
+  // ── 多 Plan 场景 ──────────────────────────────────
   {
     name: "场景1: 全新启动 — 所有 plan 各 1 项 code [pending]",
     mainState: { truth_source: "p1.md", stage: "coding",
@@ -133,7 +114,7 @@ const scenarios = [
     ]},
   },
   {
-    name: "场景2: plan1 merged, plan2/3 编码中 — plan1 全部 [completed]",
+    name: "场景2: plan1 merged, plan2/3 编码中 — plan1 全部 [completed]（含 codecheck）",
     mainState: { truth_source: "p1.md", stage: "coding",
       plan_status: { plan1: "merged", plan2: "running", plan3: "running", plan4: "running" } },
     planStates: {
@@ -142,6 +123,7 @@ const scenarios = [
     },
     expected: { items: [
       { c: ["plan1: ", CODE], s: "completed" },
+      { c: ["plan1: ", CODECHECK], s: "completed" },
       { c: ["plan1: ", REVIEW], s: "completed" },
       { c: ["plan1: ", EVAL], s: "completed" },
       { c: ["plan2: ", CODE], s: "in_progress" },
@@ -150,28 +132,29 @@ const scenarios = [
     ]},
   },
   {
-    name: "场景3: plan2 修复中, plan3 评估中 — 已完成项 content 冻结",
-    mainState: { truth_source: "p1.md", stage: "reviewing",
+    name: "场景3: plan2 codecheck 修复中 (r1/3), plan3 review 中 — 验证 codecheck 修复标注",
+    mainState: { truth_source: "p1.md", stage: "codecheck",
       plan_status: { plan1: "merged", plan2: "running", plan3: "running", plan4: "running" } },
     planStates: {
-      plan2: { truth_source: "p2.md", stage: "fixing", fixing: { trigger_stage: "reviewing", round: 2 } },
-      plan3: { truth_source: "p3.md", stage: "evaluating" },
+      plan2: { truth_source: "p2.md", stage: "fixing", fixing: { trigger_stage: "codecheck", round: 1 } },
+      plan3: { truth_source: "p3.md", stage: "reviewing" },
     },
     expected: { items: [
       { c: ["plan1: ", CODE], s: "completed" },
+      { c: ["plan1: ", CODECHECK], s: "completed" },
       { c: ["plan1: ", REVIEW], s: "completed" },
       { c: ["plan1: ", EVAL], s: "completed" },
       { c: ["plan2: ", CODE], s: "completed" },
-      { c: ["plan2: ", REVIEW], s: "completed" },
-      { c: ["plan2: ", FIX, "检视修复 r2/3"], s: "in_progress" },
+      { c: ["plan2: ", CODECHECK], s: "completed" },
+      { c: ["plan2: ", FIX, "codecheck修复 r1/3"], s: "in_progress" },
       { c: ["plan3: ", CODE], s: "completed" },
-      { c: ["plan3: ", REVIEW], s: "completed" },
-      { c: ["plan3: ", EVAL], s: "in_progress" },
+      { c: ["plan3: ", CODECHECK], s: "completed" },
+      { c: ["plan3: ", REVIEW], s: "in_progress" },
       { c: ["plan4: ", CODE], s: "pending" },
     ]},
   },
   {
-    name: "场景4: 所有 plan stage_completed — 全部 local [completed], 无 merge 项",
+    name: "场景4: 所有 plan stage_completed — 全部 local [completed]（含 codecheck）",
     mainState: { truth_source: "p1.md", stage: "stage_completed",
       plan_status: { plan1: "running", plan2: "running", plan3: "running", plan4: "running" } },
     planStates: {
@@ -182,15 +165,19 @@ const scenarios = [
     },
     expected: { items: [
       { c: ["plan1: ", CODE], s: "completed" },
+      { c: ["plan1: ", CODECHECK], s: "completed" },
       { c: ["plan1: ", REVIEW], s: "completed" },
       { c: ["plan1: ", EVAL], s: "completed" },
       { c: ["plan2: ", CODE], s: "completed" },
+      { c: ["plan2: ", CODECHECK], s: "completed" },
       { c: ["plan2: ", REVIEW], s: "completed" },
       { c: ["plan2: ", EVAL], s: "completed" },
       { c: ["plan3: ", CODE], s: "completed" },
+      { c: ["plan3: ", CODECHECK], s: "completed" },
       { c: ["plan3: ", REVIEW], s: "completed" },
       { c: ["plan3: ", EVAL], s: "completed" },
       { c: ["plan4: ", CODE], s: "completed" },
+      { c: ["plan4: ", CODECHECK], s: "completed" },
       { c: ["plan4: ", REVIEW], s: "completed" },
       { c: ["plan4: ", EVAL], s: "completed" },
     ]},
@@ -202,15 +189,19 @@ const scenarios = [
     planStates: {},
     expected: { items: [
       { c: ["plan1: ", CODE], s: "completed" },
+      { c: ["plan1: ", CODECHECK], s: "completed" },
       { c: ["plan1: ", REVIEW], s: "completed" },
       { c: ["plan1: ", EVAL], s: "completed" },
       { c: ["plan2: ", CODE], s: "completed" },
+      { c: ["plan2: ", CODECHECK], s: "completed" },
       { c: ["plan2: ", REVIEW], s: "completed" },
       { c: ["plan2: ", EVAL], s: "completed" },
       { c: ["plan3: ", CODE], s: "completed" },
+      { c: ["plan3: ", CODECHECK], s: "completed" },
       { c: ["plan3: ", REVIEW], s: "completed" },
       { c: ["plan3: ", EVAL], s: "completed" },
       { c: ["plan4: ", CODE], s: "completed" },
+      { c: ["plan4: ", CODECHECK], s: "completed" },
       { c: ["plan4: ", REVIEW], s: "completed" },
       { c: ["plan4: ", EVAL], s: "completed" },
       { c: GLOBAL, s: "in_progress" },
@@ -223,15 +214,19 @@ const scenarios = [
     planStates: {},
     expected: { items: [
       { c: ["plan1: ", CODE], s: "completed" },
+      { c: ["plan1: ", CODECHECK], s: "completed" },
       { c: ["plan1: ", REVIEW], s: "completed" },
       { c: ["plan1: ", EVAL], s: "completed" },
       { c: ["plan2: ", CODE], s: "completed" },
+      { c: ["plan2: ", CODECHECK], s: "completed" },
       { c: ["plan2: ", REVIEW], s: "completed" },
       { c: ["plan2: ", EVAL], s: "completed" },
       { c: ["plan3: ", CODE], s: "completed" },
+      { c: ["plan3: ", CODECHECK], s: "completed" },
       { c: ["plan3: ", REVIEW], s: "completed" },
       { c: ["plan3: ", EVAL], s: "completed" },
       { c: ["plan4: ", CODE], s: "completed" },
+      { c: ["plan4: ", CODECHECK], s: "completed" },
       { c: ["plan4: ", REVIEW], s: "completed" },
       { c: ["plan4: ", EVAL], s: "completed" },
       { c: GLOBAL, s: "completed" },
@@ -239,27 +234,30 @@ const scenarios = [
     ]},
   },
   {
-    name: "场景7: plan3 blocked — 已完成项保留 + blocked 项",
-    mainState: { truth_source: "p1.md", stage: "reviewing",
+    name: "场景7: plan3 blocked (trigger=codecheck) — 验证 codecheck 修复超限标注",
+    mainState: { truth_source: "p1.md", stage: "codecheck",
       plan_status: { plan1: "merged", plan2: "merged", plan3: "blocked", plan4: "running" } },
     planStates: {
       plan3: { truth_source: "p3.md", stage: "blocked",
-        fixing: { trigger_stage: "evaluating", round: 5 }, blocked_reason: "exceeded" },
+        fixing: { trigger_stage: "codecheck", round: 3 }, blocked_reason: "exceeded" },
     },
     expected: { items: [
       { c: ["plan1: ", CODE], s: "completed" },
+      { c: ["plan1: ", CODECHECK], s: "completed" },
       { c: ["plan1: ", REVIEW], s: "completed" },
       { c: ["plan1: ", EVAL], s: "completed" },
       { c: ["plan2: ", CODE], s: "completed" },
+      { c: ["plan2: ", CODECHECK], s: "completed" },
       { c: ["plan2: ", REVIEW], s: "completed" },
       { c: ["plan2: ", EVAL], s: "completed" },
       { c: ["plan3: ", CODE], s: "completed" },
-      { c: ["plan3: ", REVIEW], s: "completed" },
-      { c: ["plan3: ", EVAL], s: "completed" },
-      { c: ["plan3:", "blocked", "评估修复超限 r5/5"], s: "in_progress" },
+      { c: ["plan3: ", CODECHECK], s: "completed" },
+      { c: ["plan3:", "blocked", "codecheck修复超限 r3/3"], s: "in_progress" },
       { c: ["plan4: ", CODE], s: "pending" },
     ]},
   },
+
+  // ── 单 Plan 场景 ──────────────────────────────────
   {
     name: "场景8: 单 Plan 编码中 — 1 项 [in_progress]",
     mainState: { truth_source: "p1.md", stage: "coding" },
@@ -269,24 +267,59 @@ const scenarios = [
     ]},
   },
   {
-    name: "场景9: 单 Plan 评估中 — code+review [completed] + evaluate [in_progress]",
-    mainState: { truth_source: "p1.md", stage: "evaluating" },
+    name: "场景9: 单 Plan codecheck 中 — code [completed] + codecheck [in_progress]",
+    mainState: { truth_source: "p1.md", stage: "codecheck" },
     planStates: {}, noPlanFlow: true,
     expected: { items: [
       { c: CODE, s: "completed", nc: "plan" },
-      { c: REVIEW, s: "completed", nc: "plan" },
-      { c: EVAL, s: "in_progress", nc: "plan" },
+      { c: CODECHECK, s: "in_progress", nc: "plan" },
     ]},
   },
   {
-    name: "场景10: 单 Plan 修复中 (trigger=reviewing, r2/3)",
+    name: "场景10: 单 Plan codecheck 修复中 (trigger=codecheck, r1/3)",
+    mainState: { truth_source: "p1.md", stage: "fixing",
+      fixing: { trigger_stage: "codecheck", round: 1 } },
+    planStates: {}, noPlanFlow: true,
+    expected: { items: [
+      { c: CODE, s: "completed", nc: "plan" },
+      { c: CODECHECK, s: "completed", nc: "plan" },
+      { c: [FIX, "codecheck修复 r1/3"], s: "in_progress", nc: "plan" },
+    ]},
+  },
+  {
+    name: "场景11: 单 Plan review 修复中 (trigger=reviewing, r2/3) — codecheck 已通过",
     mainState: { truth_source: "p1.md", stage: "fixing",
       fixing: { trigger_stage: "reviewing", round: 2 } },
     planStates: {}, noPlanFlow: true,
     expected: { items: [
       { c: CODE, s: "completed", nc: "plan" },
+      { c: CODECHECK, s: "completed", nc: "plan" },
       { c: REVIEW, s: "completed", nc: "plan" },
       { c: [FIX, "检视修复 r2/3"], s: "in_progress", nc: "plan" },
+    ]},
+  },
+  {
+    name: "场景12: 单 Plan evaluate 修复中 (trigger=evaluating, r3/3)",
+    mainState: { truth_source: "p1.md", stage: "fixing",
+      fixing: { trigger_stage: "evaluating", round: 3 } },
+    planStates: {}, noPlanFlow: true,
+    expected: { items: [
+      { c: CODE, s: "completed", nc: "plan" },
+      { c: CODECHECK, s: "completed", nc: "plan" },
+      { c: REVIEW, s: "completed", nc: "plan" },
+      { c: EVAL, s: "completed", nc: "plan" },
+      { c: [FIX, "评估修复 r3/3"], s: "in_progress", nc: "plan" },
+    ]},
+  },
+  {
+    name: "场景13: 单 Plan evaluate 中 — code+codecheck+review [completed] + evaluate [in_progress]",
+    mainState: { truth_source: "p1.md", stage: "evaluating" },
+    planStates: {}, noPlanFlow: true,
+    expected: { items: [
+      { c: CODE, s: "completed", nc: "plan" },
+      { c: CODECHECK, s: "completed", nc: "plan" },
+      { c: REVIEW, s: "completed", nc: "plan" },
+      { c: EVAL, s: "in_progress", nc: "plan" },
     ]},
   },
 ];

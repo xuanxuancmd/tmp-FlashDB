@@ -27,14 +27,17 @@
 
 ## 调度规则：照 todo 推进
 
-主 Agent **照脚本输出的 todo 推进**，无需自行计算 Wave 或调度顺序：
+> todo 唯一数据源 + 反模式见 SKILL.md "todo 使用约束"段。本段仅描述多 Plan 的刷新流程。
 
-1. 写初始主 state.json（`stage=coding`, `plan_status` 全 `running`）→ hook 自动调脚本 → 输出 todo（每 plan 1 项，Wave1 in_progress，其余 pending）
-2. 调 `TodoWrite` 初始化 → 读 todo 找 `in_progress` 项 → 执行对应 stage 派发（见下方"各 stage 派发细节"）
-3. sub-agent 返回 → 刷新 plan state.json → hook 自动输出新 todo（每 plan 仍 1 项）→ 调 `TodoWrite` 更新
-4. 重复步骤 2-3，直到所有 plan merge 完成 + todo 出现 global-stages 项 → 执行 global-stages + Self-Check
+### 刷新流程
 
-> Wave 分组、依赖状态、stage 推进**全部由脚本**从 state.json + plan-flow.json + workflow.yaml 计算。AI 不参与调度计算，只按 todo 执行。todo 中每 plan 只占 1 项（当前活跃 stage 的动作），不做全景投影。
+1. 写主 state.json（`plan_status` 全 `running`）→ hook 自动调脚本 → tool output 中出现 todos JSON（每 plan 1 项，Wave1 in_progress，其余 pending）
+2. **立即**用该 JSON 调 `TodoWrite`（content / status / priority 逐字复制，不修改不补充）
+3. 读 TodoWrite 结果，找 `status=in_progress` 项 → 执行对应 stage 派发（见下方"各 stage 派发细节"）
+4. sub-agent 返回 → 刷新 plan state.json → 回到步骤 1（脚本输出新 todo）
+5. 所有 plan merge 完成 + todo 出现 global-stages 项 → 执行 global-stages + Self-Check
+
+> Wave 分组、依赖状态、stage 推进**全部由脚本**从 state.json + plan-flow.json + workflow.yaml 计算。todo 中每 plan 只占 1 项（当前活跃 stage 的动作），不做全景投影。
 
 ## Step 0: 初始化（强制执行，不可跳过）
 
@@ -105,6 +108,8 @@ task(subagent_type="code-review-agent",
 
 ### local-stages: evaluate（stage=evaluating）
 
+直接派发 code-evaluator-agent sub-agent（无需加载编排 skill）：
+
 ```
 task(subagent_type="code-evaluator-agent",
      description="评估: {plan_name}",
@@ -114,9 +119,9 @@ task(subagent_type="code-evaluator-agent",
      """)
 ```
 
-读 JSON 报告：
+等待返回报告路径 → Read JSON 报告：
 - `pass=true` → 刷新该 plan state `stage=stage_completed`
-- `pass=false` → 提取 `blocking_issues[]` → 查 yaml 的 `on_failure` → 跳转 fix（引用 `fixing-loop.md`，trigger_stage=evaluating，max 5 轮）
+- `pass=false` → 提取 `blocking_issues[]` → 查 yaml 的 `on_failure` → 跳转 fix（引用 `fixing-loop.md`，trigger_stage=evaluating，max_rounds 从 config.toml 读取）
 
 ### 修复循环（per-plan，引用 fixing-loop.md）
 

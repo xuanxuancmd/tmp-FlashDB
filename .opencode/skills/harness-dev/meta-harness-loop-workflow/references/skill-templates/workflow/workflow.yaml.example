@@ -6,10 +6,13 @@
 #   - state.json 的合法 stage 枚举
 #   - 哪些 stage 触发修复（on_failure 指向 optional-stages）
 #
+# 修复循环最大轮次不在本文件配置——统一由 config.toml 的 max_rounds 控制。
+#
 # 命名约定：yaml 用名词（stage 是工作项），state.json 用动名词（state 是运行时状态）。
 #   名词→动名词映射表（脚本内置，属允许硬编码）：
 #     code → coding | review → reviewing | evaluate → evaluating | fix → fixing
 #     global-stages name → name 本身（无映射）
+#     自定义 stage name → name 本身（无映射）
 #     （local 末项通过）→ stage_completed（内置，无对应 yaml stage）
 #     （终态）→ completed / blocked
 #
@@ -22,6 +25,12 @@
 #   - optional-stage 名  → 跳转该 optional-stage 执行（修完回 trigger_stage）
 #   - 省略               → 默认 blocked
 #   - 匹配不上           → 记日志 + 默认 blocked
+#
+# 自定义 stage 支持：
+#   用户可在 local-stages 中插入自定义 stage（如 codecheck），指定 skill 或 agent。
+#   脚本（workflow-todo-write.js / state-guard.py）从 yaml 动态读取 stage 列表，
+#   自动推导已完成项、state 枚举、trigger_stage 映射，无需修改脚本。
+#   自定义 stage 的 state 值 = stage name 本身（无名词→动名词映射）。
 #
 # merge 不在此处定义——merge 是主 Agent 检测所有 plan stage_completed 后的内置编排动作
 # （见 workflow-multi-plan.md 的 merge 行为专节）。
@@ -39,12 +48,20 @@ local-stages:
     agent: code-executor-agent      # coding skill 已烘焙在 executor 定义中
     # on_failure 省略 → 默认 blocked（编码失败直接阻断）
 
+  # ── 自定义 stage 示例（按需添加或删除）──────────────────────
+  # codecheck: 编码后、检视前的快速检查（如 lint / clippy / 自定义校验）
+  # - skill/agent 二选一：skill 由主 Agent 加载编排，agent 直接派发
+  # - on_failure: fix → 失败时跳转修复循环（max_rounds 由 config.toml 统一控制）
+  # - name: codecheck
+  #   skill: {custom_codecheck_skill}
+  #   on_failure: fix
+
   - name: review
     skill: {incremental_reviewing_skill}
     on_failure: fix         # 检视失败 → 跳转 optional-stage "fix"
 
   - name: evaluate
-    skill: harness-code-evaluator
+    agent: code-evaluator-agent      # 直接派发 evaluator agent（无编排 skill）
     on_failure: fix         # 评估失败 → 跳转 optional-stage "fix"
     # evaluate 通过 → stage_completed
 
@@ -61,7 +78,7 @@ global-stages:
 # key = stage 名（名词），对应 state "fixing"。
 # 修完自动回到 trigger_stage（state.fixing.trigger_stage 记录，状态机内置行为）。
 # fix 失败 = 本轮修复无解 → blocked 上报。
-# 总修复轮次由 trigger_stage 的 retry 上限控制（review 3 轮 / evaluate 5 轮，硬编码）。
+# 总修复轮次由 config.toml 的 max_rounds 统一控制。
 optional-stages:
   fix:
     agent: code-executor-agent      # fixing skill 由主 Agent 在 fixing-loop 流程中加载

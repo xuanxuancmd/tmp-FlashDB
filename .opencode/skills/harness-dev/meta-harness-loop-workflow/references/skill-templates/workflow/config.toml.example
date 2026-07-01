@@ -1,0 +1,6 @@
+# config.toml — Harness 配置文件
+#
+# 修复循环的统一最大轮次（所有 stage 共用，如 review/evaluate/codecheck 修复均为该值）
+# 主 Agent 进入 fixing 循环前 Read 本文件获取该值
+# 脚本（workflow-todo-write.js）读取该值用于 todo 显示标注（rN/max_rounds）
+max_rounds = 3

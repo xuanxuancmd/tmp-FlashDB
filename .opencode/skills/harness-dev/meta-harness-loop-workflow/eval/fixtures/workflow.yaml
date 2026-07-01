@@ -1,0 +1,29 @@
+# workflow.yaml — eval 测试用固定 fixture
+#
+# 含 codecheck 自定义 stage（code → codecheck → review → evaluate），
+# 验证 workflow-todo-write.js 对自定义 stage 的支持。
+# max_rounds 由 config.toml 统一配置，不在 yaml 中。
+version: 1
+module: testmod
+
+local-stages:
+  - name: code
+    agent: code-executor-agent
+  - name: codecheck
+    skill: custom-codecheck-skill
+    on_failure: fix
+  - name: review
+    skill: harness-code-review
+    on_failure: fix
+  - name: evaluate
+    agent: code-evaluator-agent
+    on_failure: fix
+
+global-stages:
+  - name: review
+    skill: harness-run-e2e-test
+    on_failure: fix
+
+optional-stages:
+  fix:
+    agent: code-executor-agent

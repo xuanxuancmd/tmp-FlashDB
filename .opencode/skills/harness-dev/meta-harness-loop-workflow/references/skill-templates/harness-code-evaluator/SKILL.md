@@ -1,7 +1,8 @@
 # 评估编排 Skill 模板
 
 > 生成 harness-code-evaluator Skill 时，按此模板填充。
-> 此 Skill 教 workflow 的 Maker 如何调用 evaluator agent、如何消费报告、如何控制重试循环。
+> 此 Skill 教 workflow 的 Maker 如何调用 evaluator agent、如何消费报告。
+> 修复循环逻辑统一引用 `fixing-loop.md`，本模板不重复。
 > `{target_lang}` 影响 prompt 中的构建命令提示。
 
 ---
@@ -19,7 +20,12 @@ description: >-
 
 ## 职责
 
-指导主 Agent 完成「评估 → 修复」循环：调用 evaluator agent → 读取报告 → 提取问题 → 拉起 executor(mode=fix) 修复 → 重新评估（最多 5 次）。
+指导主 Agent 完成评估环节：调用 evaluator agent → 读取报告 → 判定 pass/fail。
+
+- `pass=true` → 评估通过，交回 workflow 推进下一 stage
+- `pass=false` → 进入修复循环（**引用 `fixing-loop.md`**，`trigger_stage=evaluating`，`max_rounds=5`）
+
+> 修复循环的完整流程（修前检查、executor 派发、修后检查、重评估、终止处理）由 `fixing-loop.md` 统一定义，本 skill 不重复。
 
 ---
 
@@ -58,66 +64,6 @@ task(
 
 ---
 
-## 修复循环流程
-
-```
-current_retry = 0
-
-┌─ 循环开始 ─────────────────────────────────────────────┐
-│                                                         │
-│  current_retry >= 5 ?                                   │
-│      ├─ YES → 停止重试，设 status=blocked（见"终止处理"） │
-│      └─ NO  → current_retry += 1                        │
-│                                                         │
-│  task(subagent_type="code-evaluator-agent")           │
-│      ↓                                                  │
-│  等待返回报告路径                                        │
-│      ↓                                                  │
-│  Read({evidence_dir}/code-evaluator-agent-review.json)│
-│      → overall_result.pass?                             │
-│      ├─ YES → 审查通过 ✅ 退出循环                       │
-│      └─ NO  → Read(blocking_issues[])                   │
-│              ↓                                          │
-│         对每个 blocking_issue 分类处理                    │
-│              ↓                                          │
-│         拉起 executor(mode=fix) 修复:                    │
-│         task(subagent_type="code-executor-agent",       │
-│              prompt="mode: fix, issues: [...],          │
-│              context_summary: {SUMMARY路径},            │
-│              worktree_path: {worktree_path}")           │
-│              → 等待返回 status=completed                 │
-│              ↓                                          │
-│         修复完成 → 返回循环开始（重新评估）                 │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-```
-
-### blocking_issues 分类处理
-
-主 Agent 从报告提取 issues 后，拉起 executor(mode=fix) 修复。issues 按严重度分类传给 executor：
-
-| 严重度 | 类型 | 传给 executor 的修复指令 |
-|--------|------|---------|
-| **HIGH** | missing | issue 标注"缺失实现"，executor 补充 |
-| **HIGH** | incomplete | issue 标注"逻辑不完整"，executor 补全 |
-| **HIGH** | wrong | issue 标注"实现有误"，executor 对照原始需求重写 |
-| **HIGH** | unresolved | issue 标注"未触及根因"，executor 分析根因后修复 |
-| **HIGH** | regression | issue 标注"引入回归"，executor 回退或修复回归 |
-| **MEDIUM** | 任意 | 主 Agent 评估后决定：可接受则跳过，否则传给 executor 修复 |
-
-**优先级规则**：HIGH 阻断性优先处理，修复期间跳过非阻塞工作。
-
-### 终止处理
-
-5 次循环仍未通过时，设 `status=blocked`，向用户报告：
-
-1. 剩余 HIGH 阻断性问题列表（含位置和描述）写入 evidence 报告
-2. 剩余 MEDIUM 非阻断性问题汇总写入 evidence 报告
-3. 最后一次审查的报告路径记录在 state.json 的 `blocked_reason`
-4. state.json 刷新为 `status=blocked`，由终态机制触发人工介入
-
----
-
 ## 报告消费指南
 
 ### 入口：`{evidence_dir}/code-evaluator-agent-review.json`
@@ -130,12 +76,21 @@ current_retry = 0
 消费步骤：
 
 1. **Read JSON 报告** → 提取 `overall_result.pass` 和 `blocking_issues[]`
-2. `pass=true` → 审查通过
+2. `pass=true` → 评估通过 ✅
 3. `pass=false` → 遍历 `blocking_issues[]`，对每个 issue：
    - 读取 `location` 定位代码位置
    - 读取 `expected` 和 `actual` 理解差距
    - 读取 `requirement_ref` 关联回原始需求
    - 按严重度分类处理
+
+### blocking_issues 严重度
+
+| 严重度 | 类型 | 处理 |
+|--------|------|------|
+| **HIGH** | missing / incomplete / wrong / unresolved / regression | 传给 executor(mode=fix) 修复 |
+| **MEDIUM** | 任意 | 主 Agent 评估后决定：可接受则跳过，否则传给 executor 修复 |
+
+> 完整的 issues 分类处理表和修复循环流程见 `fixing-loop.md`。
 
 ---
 
@@ -143,28 +98,26 @@ current_retry = 0
 
 executor(mode=fix) 在修复过程中会自行运行 build+test 自检。主 Agent 在重新拉起 evaluator 前，无需自行运行构建命令（executor 返回 status=completed 即表示 build+test 已通过）。
 
-> executor 内部的构建/测试命令由 executor agent 定义中的 `{build_cmd}` / `{test_cmd}` 决定，与本 skill 的语言感知表无关。
+> executor 内部的构建/测试命令由 executor agent 定义中的 `{build_cmd}` / `{test_cmd}` 决定，与本 skill 无关。
 
 ---
 
 ## 禁止事项
 
 1. ❌ pass=false 时跳过修复直接交付
-2. ❌ 超过 5 次循环后继续自动重试
-3. ❌ 忽略 HIGH blocking_issues 继续其他工作
-4. ❌ 在未读取 JSON 报告的情况下决定修复方案
-5. ❌ 主 Agent 自行修复代码而不拉起 executor(mode=fix)（修复必须委托 executor sub-agent）
-6. ❌ 评估-修复循环中除达到 5 次上限的 `status=blocked` 终态外,禁止 `question()` 向用户提问
-7. ❌ 评估未通过时禁止 `question()` — 必须自动进入修复流程
-8. ❌ 修复后禁止 `question()` 确认 — 必须自动重新调用 evaluator 验证
+2. ❌ 忽略 HIGH blocking_issues 继续其他工作
+3. ❌ 在未读取 JSON 报告的情况下决定修复方案
+4. ❌ 主 Agent 自行修复代码而不拉起 executor(mode=fix)（修复必须委托 executor sub-agent）
+5. ❌ 评估-修复循环中除达到 5 次上限的 `status=blocked` 终态外，禁止 `question()` 向用户提问
+6. ❌ 评估未通过时禁止 `question()` — 必须自动进入修复流程
+7. ❌ 修复后禁止 `question()` 确认 — 必须自动重新调用 evaluator 验证
 
 ## 强制事项
 
 1. ✅ 优先处理 HIGH 问题，MEDIUM 可评估后跳过
-2. ✅ 遵循 5 次循环上限，达到后设 `status=blocked`
-3. ✅ 修复后必须重新调用 evaluator 验证
-4. ✅ 每次循环前完整读取 JSON 报告，不凭记忆
-5. ✅ 5 次失败后设 `status=blocked`：阻断问题、非阻断问题、报告路径写入 evidence
+2. ✅ 修复后必须重新调用 evaluator 验证
+3. ✅ 每次循环前完整读取 JSON 报告，不凭记忆
+4. ✅ 5 次失败后设 `status=blocked`：阻断问题、非阻断问题、报告路径写入 evidence（终止处理见 `fixing-loop.md`）
 ```
 
 ---
@@ -174,9 +127,9 @@ executor(mode=fix) 在修复过程中会自行运行 build+test 自检。主 Age
 | 变量 | 来源 | 示例值 |
 |------|------|--------|
 | `{skill_name}` | 用户输入或自动 | `harness-dev-workflow` |
-| `{target_lang}` | Step 0.5 | `rust` |
-| `{build_cmd}` | Step 0.5 | `cargo check` |
-| `{test_cmd}` | Step 0.5 | `cargo test` |
+| `{target_lang}` | Step 2 | `rust` |
+| `{build_cmd}` | Step 2 | `cargo check` |
+| `{test_cmd}` | Step 2 | `cargo test` |
 | `{evidence_dir}` | 用户输入或默认 | `.opencode/harness/evidence` |
 | `{package}` | 运行时参数 | `connect-runtime` |
 | `{plan_path}` | 运行时参数 | `.sisyphus/plans/runtime-plan.md` |
@@ -185,5 +138,6 @@ executor(mode=fix) 在修复过程中会自行运行 build+test 自检。主 Age
 
 1. 写入 `.opencode/skills/harness-dev/harness-code-evaluator/SKILL.md`（OpenCode）或对应 Claude Code 路径
 2. 模板 `task()` 调用中的 `subagent_type` 必须固定为 `"code-evaluator-agent"`
-3. 编译/测试命令表从 Step 0.5 推断
-4. 总行数建议 80-120 行
+3. 编译/测试命令表从 Step 2 推断
+4. **不重复修复循环逻辑**——修复循环由 `fixing-loop.md` 统一定义，本 skill 只负责评估调用 + 报告消费 + pass/fail 判定
+5. 总行数建议 60-100 行（比旧版精简，因修复循环逻辑移至 fixing-loop.md）

@@ -1,0 +1,8 @@
+{
+  "plans": [
+    { "name": "plan1", "path": "p1.md", "depends_on": [] },
+    { "name": "plan2", "path": "p2.md", "depends_on": ["plan1"] },
+    { "name": "plan3", "path": "p3.md", "depends_on": ["plan1"] },
+    { "name": "plan4", "path": "p4.md", "depends_on": ["plan2", "plan3"] }
+  ]
+}

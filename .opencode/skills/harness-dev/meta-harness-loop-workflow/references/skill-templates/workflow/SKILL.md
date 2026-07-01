@@ -15,7 +15,8 @@
     ├── fixing-loop.md                    # Fixing 阶段通用权威（主 Agent 拉起 executor mode=fix）
     └── state-schema.md                   # 统一 state.json schema + 名词映射 + 三层一致性 + 断点续传
 .opencode/harness/
-└── workflow.yaml                         # 工作流定义（stage 顺序 + on_failure 跳转，状态转移规则单一权威）
+├── workflow.yaml                         # 工作流定义（stage 顺序 + on_failure 跳转，状态转移规则单一权威）
+└── config.toml                           # Harness 配置（max_rounds 等统一参数）
 ```
 
 ## 模板文件索引
@@ -24,6 +25,7 @@
 |---------|---------|------|
 | 本文件 SKILL.md | `.opencode/skills/{skill_name}/SKILL.md` | 薄入口（职责+原则+输入+预检+模式判定+禁止事项） |
 | `workflow.yaml.example` | `.opencode/harness/workflow.yaml` | 工作流定义（stage 顺序 + on_failure，状态转移规则的单一权威） |
+| `config.toml.example` | `.opencode/harness/config.toml` | Harness 配置（max_rounds 等统一参数） |
 | `workflow-single-plan.md` | `references/workflow-single-plan.md` | 单 Plan 执行流程 |
 | `workflow-multi-plan.md` | `references/workflow-multi-plan.md` | 多 Plan 编排（串行/并发可选 + merge 行为专节） |
 | `fixing-loop.md` | `references/fixing-loop.md` | Fixing 阶段通用权威（循环流程 + issues 分类 + evidence 消费 + 终止处理） |
@@ -90,6 +92,17 @@ description: >-
 
 > sub-skill 内部的 `question()`(如 CatA 审批、evaluator 失败)由 sub-skill 自行定义,workflow 不重复硬编码。
 
+## todo 使用约束（全局规则）
+
+todo 列表的**唯一数据源**是脚本 `workflow-todo-write.js` 返回的 JSON（由 hook 注入到 tool output，或 AI 手动执行脚本获取 stdout）。AI 不计算 todo 内容，只做三件事：**读 JSON → 原样传入 TodoWrite → 照 `in_progress` 项执行派发**。
+
+### ❌ todo 反模式（通用，两种模式均适用）
+
+- ❌ **自写 content** — 禁止手写脚本不产出的描述（如"预检: 读取 workflow.yaml"、"Wave 1: foundation 编码"等）。content 只从脚本 JSON 复制
+- ❌ **跳过 TodoWrite 调用** — 每次 state.json 刷新后必须立即调 TodoWrite，不得拖延或跳过
+
+> stage 推进、Wave 分组、修复轮次标注**全部由脚本**计算。AI 的职责是"照 todo 执行"，不是"算 todo"。各模式的刷新流程见 `references/workflow-{single|multi}-plan.md` 调度规则段。
+
 ## 输入
 
 ### 必选(二选一)
@@ -138,4 +151,5 @@ description: >-
 10. ❌ 修改 `truth_source_path` 中的 Plan 路径数组
 11. ❌ Agent 自主暂停(非显式 `question()` 的任何暂停行为)
 12. ❌ worktree 未 merge 就删除(会丢失代码)
+13. ❌ 违反 todo 使用约束(自写 content / 预创建全景清单 / 跳过 TodoWrite 等,详见"todo 使用约束"段)
 ```

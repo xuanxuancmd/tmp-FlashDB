@@ -16,14 +16,15 @@ local-stages 顺序执行（code → review → evaluate，按 yaml 数组）
 
 ## 调度规则：照 todo 推进
 
-主 Agent **照脚本输出的 todo 推进**，无需自行维护阶段清单：
+> todo 唯一数据源 + 反模式见 SKILL.md "todo 使用约束"段。本段仅描述单 Plan 的刷新流程。
 
-1. 写初始主 state.json（`stage=coding`）→ hook 自动调脚本 → 输出 todo（当前活跃 stage 的动作，每 plan 1 项）
-2. 调 `TodoWrite` 初始化 → 读 todo 找 `in_progress` 项 → 执行对应 stage 派发（见下方"各 stage 派发细节"）
-3. sub-agent 返回 → 刷新 state.json → hook 自动输出新 todo → 调 `TodoWrite` 更新
-4. 重复步骤 2-3，直到 "Workflow 完成" 项变 `in_progress` → 执行 Self-Check
+### 刷新流程
 
-> stage 推进、修复轮次标注**全部由脚本**从 state.json + workflow.yaml 计算。AI 不参与 todo 状态计算，只按 todo 执行。
+1. 写 state.json → hook 自动调脚本 → tool output 中出现 todos JSON
+2. **立即**用该 JSON 调 `TodoWrite`（content / status / priority 逐字复制，不修改不补充）
+3. 读 TodoWrite 结果，找 `status=in_progress` 项 → 执行对应 stage 派发（见"各 stage 派发细节"）
+4. sub-agent 返回 → 刷新 state.json → 回到步骤 1
+5. 出现 "Workflow 完成" 项且 `in_progress` → 执行 Self-Check
 
 ## 各 stage 派发细节
 
@@ -54,9 +55,22 @@ task(
 
 ### local-stages: evaluate（stage=evaluating）
 
-加载评估编排 skill `harness-code-evaluator`，拉起 code-evaluator-agent sub-agent，读 JSON 报告：
-- `pass=true` → 刷新 `stage=stage_completed` → 进入 global-stages
-- `pass=false` → 提取 `blocking_issues[]` → 查 yaml 的 `on_failure` → 跳转 fix（引用 `fixing-loop.md`，trigger_stage=evaluating，max 5 轮）
+直接派发 code-evaluator-agent sub-agent（无需加载编排 skill）：
+
+```
+task(
+  subagent_type="code-evaluator-agent",
+  description="代码评估",
+  prompt="""
+    requirement_source: Plan 路径: {plan_path}
+    worktree_path:
+  """
+)
+```
+
+等待返回报告路径 → Read `.opencode/harness/evidence/code-evaluator-agent-review.json`：
+- `overall_result.pass=true` → 刷新 `stage=stage_completed` → 进入 global-stages
+- `pass=false` → 提取 `blocking_issues[]` → 查 yaml 的 `on_failure` → 跳转 fix（引用 `fixing-loop.md`，trigger_stage=evaluating，max_rounds 从 config.toml 读取）
 
 ### global-stages（stage=各 global-stages name）
 

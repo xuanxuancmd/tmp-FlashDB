@@ -40,10 +40,10 @@ const NOUN_TO_DISPLAY = {
   fix: "修复",
 };
 
-// trigger_stage → 显示名 + 最大重试轮次（允许硬编码，retry 保持硬编码）
-const TRIGGER_INFO = {
-  reviewing: { display: "检视", maxRounds: 3 },
-  evaluating: { display: "评估", maxRounds: 5 },
+// trigger_stage → 显示名（fallback，优先从 yaml stage 名查 NOUN_TO_DISPLAY）
+const TRIGGER_DISPLAY = {
+  reviewing: "检视",
+  evaluating: "评估",
 };
 
 // ── 最小 YAML 解析器（零外部依赖，仅支持 workflow.yaml 的 schema 子集）──
@@ -153,6 +153,41 @@ function loadWorkflowConfig(harnessDir) {
   }
 }
 
+// ── 最小 TOML 解析器（零外部依赖，仅支持 key = value 行级配置）──
+// 支持：注释（#）、整数、布尔、字符串
+function parseSimpleToml(text) {
+  const result = {};
+  for (const raw of text.split(/\r?\n/)) {
+    let content = raw;
+    const hashIdx = content.indexOf("#");
+    if (hashIdx >= 0) content = content.slice(0, hashIdx);
+    content = content.trim();
+    if (!content) continue;
+    const idx = content.indexOf("=");
+    if (idx < 0) continue;
+    const key = content.slice(0, idx).trim();
+    let val = content.slice(idx + 1).trim();
+    if (/^\d+$/.test(val)) val = parseInt(val, 10);
+    else if (val === "true") val = true;
+    else if (val === "false") val = false;
+    else val = val.replace(/^["']|["']$/g, "");
+    result[key] = val;
+  }
+  return result;
+}
+
+function loadHarnessConfig(harnessDir) {
+  const tomlPath = path.join(harnessDir, "config.toml");
+  if (!fs.existsSync(tomlPath)) return {};
+  try {
+    const text = fs.readFileSync(tomlPath, "utf-8");
+    return parseSimpleToml(text);
+  } catch (exc) {
+    process.stderr.write(`[workflow-todo-write] config.toml parse error: ${exc}\n`);
+    return {};
+  }
+}
+
 // 返回 {type: "skill"|"agent", name: string} 或 null
 function getStageDispatch(config, stageName) {
   for (const stage of config["local-stages"] || []) {
@@ -190,6 +225,35 @@ function stateToNoun(stateValue) {
     if (st === stateValue) return noun;
   }
   return null;
+}
+
+// 从 local-stages 根据 state 值（动名词或 name 本身）找到对应的 stage noun
+// 支持自定义 stage：NOUN_TO_STATE 兜底返回 name 本身作为 state 值
+function findStageNounByState(localStages, stateVal) {
+  for (const s of localStages) {
+    const sv = NOUN_TO_STATE[s.name] || s.name;
+    if (sv === stateVal) return s.name;
+  }
+  return null;
+}
+
+// 通用 trigger info 获取（支持自定义 stage）
+// maxRounds 从 config.toml 统一读取，由调用方传入
+// 返回 {display, maxRounds} 或 null
+function getTriggerInfo(config, triggerStage, maxRounds) {
+  if (!triggerStage) return null;
+  const localStages = config["local-stages"] || [];
+  const globalStages = config["global-stages"] || [];
+  for (const s of [...localStages, ...globalStages]) {
+    const sv = NOUN_TO_STATE[s.name] || s.name;
+    if (sv === triggerStage) {
+      const display = NOUN_TO_DISPLAY[s.name] || s.name;
+      return { display, maxRounds };
+    }
+  }
+  // fallback: triggerStage 未在 yaml 中找到（可能是旧 state）
+  const display = TRIGGER_DISPLAY[triggerStage] || triggerStage;
+  return { display, maxRounds };
 }
 
 // ── JSON 读取工具 ────────────────────────────────────────────
@@ -359,7 +423,8 @@ function buildPlanTodoItems(planName, planState, planFlowStatus, config, depsSat
     return `${prefix}${display} — ${formatAction(dispatch)}${label}`;
   }
 
-  // 根据 stage 推导已完成的 stage nouns（按 local-stages 顺序）
+  // 根据 stage 推导已完成的 stage nouns（按 local-stages 数组顺序动态推导）
+  // 支持自定义 stage：通过 findStageNounByState 从 yaml 查找，不硬编码 stage 名
   function getCompletedNouns() {
     if (planFlowStatus === "merged" || planFlowStatus === "completed" ||
         planState.stage === "completed" || planState.stage === "stage_completed") {
@@ -367,16 +432,24 @@ function buildPlanTodoItems(planName, planState, planFlowStatus, config, depsSat
     }
     const stage = planState.stage || "coding";
     const fixing = planState.fixing;
-    const triggerStage = fixing ? fixing.trigger_stage : null;
-    if (stage === "coding") return [];
-    if (stage === "reviewing") return ["code"];
-    if (stage === "evaluating") return ["code", "review"];
+
     if (stage === "fixing" || stage === "blocked") {
-      if (triggerStage === "reviewing") return ["code", "review"];
-      if (triggerStage === "evaluating") return ["code", "review", "evaluate"];
-      return [];
+      // 修复中/blocked：trigger_stage 及其之前的都算已完成（trigger stage 本身进行过）
+      const triggerStage = fixing ? fixing.trigger_stage : null;
+      if (!triggerStage) return [];
+      const noun = findStageNounByState(localStages, triggerStage);
+      if (!noun) return [];
+      const idx = localStages.findIndex((s) => s.name === noun);
+      if (idx < 0) return [];
+      return localStages.slice(0, idx + 1).map((s) => s.name);
     }
-    return [];
+
+    // 正常推进：当前 stage 之前的都已完成
+    const noun = findStageNounByState(localStages, stage);
+    if (!noun) return [];
+    const idx = localStages.findIndex((s) => s.name === noun);
+    if (idx < 0) return [];
+    return localStages.slice(0, idx).map((s) => s.name);
   }
 
   // 已完成项 [completed]（content 冻结）
@@ -400,12 +473,15 @@ function buildPlanTodoItems(planName, planState, planFlowStatus, config, depsSat
     const fixing = planState.fixing;
     const triggerStage = fixing ? fixing.trigger_stage : null;
     let label = "🛑 blocked";
-    if (triggerStage && TRIGGER_INFO[triggerStage]) {
-      const ti = TRIGGER_INFO[triggerStage];
-      const round = fixing ? (fixing.round || 1) : 1;
-      label = `🛑 blocked（${ti.display}修复超限 r${round}/${ti.maxRounds}）`;
+    let display = "编码";
+    if (triggerStage) {
+      const ti = getTriggerInfo(config, triggerStage, config._maxRounds);
+      if (ti) {
+        const round = fixing ? (fixing.round || 1) : 1;
+        label = `🛑 blocked（${ti.display}修复超限 r${round}/${ti.maxRounds}）`;
+        display = ti.display;
+      }
     }
-    const display = triggerStage ? (TRIGGER_INFO[triggerStage]?.display || "编码") : "编码";
     items.push({
       content: `${prefix}${display} ${label}`,
       status: "in_progress",
@@ -414,10 +490,10 @@ function buildPlanTodoItems(planName, planState, planFlowStatus, config, depsSat
     return items;
   }
 
-  // 未启动 → code [pending]
+  // 未启动 → 第一个 local-stage [pending]
   if (!started) {
     items.push({
-      content: stageContent("code"),
+      content: stageContent(localStages[0] ? localStages[0].name : "code"),
       status: "pending",
       priority: "high",
     });
@@ -430,10 +506,12 @@ function buildPlanTodoItems(planName, planState, planFlowStatus, config, depsSat
     const fixing = planState.fixing;
     const triggerStage = fixing ? fixing.trigger_stage : null;
     let fixLabel = "";
-    if (triggerStage && TRIGGER_INFO[triggerStage]) {
-      const ti = TRIGGER_INFO[triggerStage];
-      const round = fixing ? (fixing.round || 1) : 1;
-      fixLabel = `（${ti.display}修复 r${round}/${ti.maxRounds}）`;
+    if (triggerStage) {
+      const ti = getTriggerInfo(config, triggerStage, config._maxRounds);
+      if (ti) {
+        const round = fixing ? (fixing.round || 1) : 1;
+        fixLabel = `（${ti.display}修复 r${round}/${ti.maxRounds}）`;
+      }
     }
     items.push({
       content: stageContent("fix", fixLabel),
@@ -441,7 +519,7 @@ function buildPlanTodoItems(planName, planState, planFlowStatus, config, depsSat
       priority: "high",
     });
   } else {
-    const noun = stateToNoun(stage);
+    const noun = findStageNounByState(localStages, stage);
     if (noun) {
       items.push({
         content: stageContent(noun),
@@ -609,22 +687,28 @@ function buildSinglePlanTodos(statePath, config) {
     return `${display} — ${formatAction(dispatch)}${label}`;
   }
 
-  // 根据 stage 推导已完成的 stage nouns
+  // 根据 stage 推导已完成的 stage nouns（按 local-stages 数组顺序动态推导）
   function getCompletedNouns() {
     if (stage === "completed" || stage === "stage_completed") {
       return localStages.map((s) => s.name);
     }
     const fixing = mainState.fixing;
-    const triggerStage = fixing ? fixing.trigger_stage : null;
-    if (stage === "coding") return [];
-    if (stage === "reviewing") return ["code"];
-    if (stage === "evaluating") return ["code", "review"];
+
     if (stage === "fixing" || stage === "blocked") {
-      if (triggerStage === "reviewing") return ["code", "review"];
-      if (triggerStage === "evaluating") return ["code", "review", "evaluate"];
-      return [];
+      const triggerStage = fixing ? fixing.trigger_stage : null;
+      if (!triggerStage) return [];
+      const noun = findStageNounByState(localStages, triggerStage);
+      if (!noun) return [];
+      const idx = localStages.findIndex((s) => s.name === noun);
+      if (idx < 0) return [];
+      return localStages.slice(0, idx + 1).map((s) => s.name);
     }
-    return [];
+
+    const noun = findStageNounByState(localStages, stage);
+    if (!noun) return [];
+    const idx = localStages.findIndex((s) => s.name === noun);
+    if (idx < 0) return [];
+    return localStages.slice(0, idx).map((s) => s.name);
   }
 
   const todos = [];
@@ -652,11 +736,13 @@ function buildSinglePlanTodos(statePath, config) {
     const triggerStage = fixing ? fixing.trigger_stage : null;
     let label = "🛑 blocked";
     let display = "编码";
-    if (triggerStage && TRIGGER_INFO[triggerStage]) {
-      const ti = TRIGGER_INFO[triggerStage];
-      const round = fixing ? (fixing.round || 1) : 1;
-      display = ti.display;
-      label = `🛑 blocked（${ti.display}修复超限 r${round}/${ti.maxRounds}）`;
+    if (triggerStage) {
+      const ti = getTriggerInfo(config, triggerStage, config._maxRounds);
+      if (ti) {
+        const round = fixing ? (fixing.round || 1) : 1;
+        label = `🛑 blocked（${ti.display}修复超限 r${round}/${ti.maxRounds}）`;
+        display = ti.display;
+      }
     }
     todos.push({
       content: `${display} ${label}`,
@@ -671,10 +757,12 @@ function buildSinglePlanTodos(statePath, config) {
     const fixing = mainState.fixing;
     const triggerStage = fixing ? fixing.trigger_stage : null;
     let fixLabel = "";
-    if (triggerStage && TRIGGER_INFO[triggerStage]) {
-      const ti = TRIGGER_INFO[triggerStage];
-      const round = fixing ? (fixing.round || 1) : 1;
-      fixLabel = `（${ti.display}修复 r${round}/${ti.maxRounds}）`;
+    if (triggerStage) {
+      const ti = getTriggerInfo(config, triggerStage, config._maxRounds);
+      if (ti) {
+        const round = fixing ? (fixing.round || 1) : 1;
+        fixLabel = `（${ti.display}修复 r${round}/${ti.maxRounds}）`;
+      }
     }
     todos.push({
       content: stageContent("fix", fixLabel),
@@ -682,7 +770,7 @@ function buildSinglePlanTodos(statePath, config) {
       priority: "high",
     });
   } else {
-    const noun = stateToNoun(stage);
+    const noun = findStageNounByState(localStages, stage);
     if (noun) {
       todos.push({
         content: stageContent(noun),
@@ -736,6 +824,9 @@ function main() {
     process.stderr.write("[workflow-todo-write] 无法加载 workflow.yaml，todo 计算中止\n");
     return 1;
   }
+
+  const harnessConfig = loadHarnessConfig(harnessDir);
+  config._maxRounds = harnessConfig.max_rounds || 3;
 
   let todos = buildMultiPlanTodos(statePath, stateDir, config);
   if (!todos) {

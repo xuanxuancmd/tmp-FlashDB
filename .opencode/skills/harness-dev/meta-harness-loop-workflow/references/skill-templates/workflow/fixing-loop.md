@@ -6,11 +6,13 @@ Fixing 由**主 Agent** 编排：拉起 executor(mode=fix) 修复 → 拉起 che
 
 触发由 `workflow.yaml` 的 `on_failure` 字段决定——当某 stage 的 `on_failure: fix` 且 checker 报告 `pass=false` 时，跳转 fix（optional-stage）。
 
-典型场景（由 yaml 的 local-stages / global-stages 的 on_failure 声明）：
-- review stage 报告 `pass=false` → 检视修复循环（`trigger_stage=reviewing`，checker=code-review-agent）
-- evaluate stage 报告 `pass=false` → 评估修复循环（`trigger_stage=evaluating`，checker=code-evaluator-agent）
+触发逻辑通用于所有配置了 `on_failure: fix` 的 stage（local-stages / global-stages 均适用，含用户自定义 stage）：
 
-> 哪些 stage 触发 fix **不由脚本写死**，由 yaml 的 on_failure 声明决定。
+- 某 stage 的 checker 报告 `pass=false` → 跳转 fix（optional-stage）
+- `trigger_stage` = 该 stage 对应的 state 值
+- checker = 该 stage 配置的 skill 或 agent
+
+> 哪些 stage 触发 fix **不由脚本写死**，由 yaml 的 on_failure 声明决定。任意 stage 只要声明 `on_failure: fix` 即适用本流程。
 
 ## 修复循环流程
 
@@ -37,8 +39,10 @@ round = 0
 │     非空），执行修后检查（回归检测 + diff 质量）           │
 │      ↓                                                  │
 │  ⑤ 重新拉起 checker sub-agent:                          │
+│     - 按 yaml 中 trigger_stage 对应 stage 的 skill/agent │
 │     - 检视修复: task(code-review-agent, review_path)   │
 │     - 评估修复: task(code-evaluator-agent, plan_path)  │
+│     - 自定义 stage 修复: 按 stage 配置的 skill/agent    │
 │      → 等待返回报告路径                                  │
 │      ↓                                                  │
 │  ⑥ 读 checker 报告（见"evidence 消费原则"）:             │
@@ -50,10 +54,10 @@ round = 0
 
 ## retry 语义（重要）
 
-**fix 本身失败不直接 blocked**。修复循环的总轮次由 **trigger_stage 的 retry 上限**控制：
+**fix 本身失败不直接 blocked**。修复循环的总轮次由 **config.toml 的 max_rounds** 统一控制：
 
-- `trigger_stage=reviewing` → max 3 轮（每轮 review 失败触发一次 fix）
-- `trigger_stage=evaluating` → max 5 轮（每轮 evaluate 失败触发一次 fix）
+- 所有配置了 `on_failure: fix` 的 stage 共用同一个 max_rounds 值
+- 主 Agent 进入 fixing 循环前 Read `.opencode/harness/config.toml` 获取 max_rounds
 
 完整路径：
 ```
@@ -64,9 +68,7 @@ review 失败 → on_failure: fix → 执行 fix →
   └─ fix 失败（executor 搞不定）→ 本轮无解 → 检查 round 是否超限
 ```
 
-> fix 的 `on_failure: blocked`（yaml optional-stages 中）表示"fix 阶段 executor 无解时 → blocked 上报"，但**总修复轮次由 trigger_stage retry 上限控制**，不是"fix 失败一次就 blocked"。
->
-> retry 上限目前硬编码（review 3 / evaluate 5），未来可扩展为 yaml 配置。
+> fix 的 `on_failure: blocked`（yaml optional-stages 中）表示"fix 阶段 executor 无解时 → blocked 上报"，但**总修复轮次由 config.toml 的 max_rounds 统一控制**，不是"fix 失败一次就 blocked"。
 
 ## evidence 消费原则
 

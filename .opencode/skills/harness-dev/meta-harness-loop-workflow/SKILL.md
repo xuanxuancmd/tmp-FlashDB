@@ -124,14 +124,15 @@ description: >-
 | **coding** | "编码"、"翻译"、"BDD"、"step definition"、"cucumber"、"实现"、"translate"、"mapping"、"migration" | `java-translate-to-rust`、`harness-bdd-coding` | `{coding_skills}` | executor agent（烘焙进 agent 定义） |
 | **incremental_reviewing** | "增量"、"incremental"、"review"、"代码检视"、"code-review" | `harness-code-review`、`harness-translate-code-review` | `{incremental_reviewing_skill}` | workflow.yaml local-stages review 项 |
 | **full_reviewing** | "全量"、"full review"、"E2E"、"端到端" | `harness-run-e2e-test` | `{full_reviewing_skill}` | workflow.yaml global-stages full_review 项 |
-| **evaluating** | "评估"、"对抗性审查"、"evaluator"（仅 Plan 层使用，Task 层无评估环节） | — | 内置 skill | workflow.yaml local-stages evaluate 项 |
+| **evaluating** | "评估"、"对抗性审查"、"evaluator"（仅 Plan 层使用，Task 层无评估环节） | — | 无（直接用 agent） | workflow.yaml local-stages evaluate 项 |
 | **fixing** | "修复自检"、"fix-self-check"、"修复健康"、"self-check"（修复阶段的思维方式门禁） | `fix-self-check` | `{fixing_skill}` | workflow.yaml optional-stages fix 项 |
 
 **注意**：
-- executor agent 只烘焙 `{coding_skills}`，不烘焙检视/评估/修复编排技能（executor 是纯执行者，不编排）
+- executor agent 只烘焙 `{coding_skills}`，不烘焙检视/修复编排技能（executor 是纯执行者，不编排）
 - 主 Agent 在 workflow 的对应阶段自行加载检视/修复编排技能
-- `evaluating` 阶段使用 meta skill 生成的 `harness-code-evaluator` 编排 skill，无外部 skill 注入
+- `evaluating` 阶段直接派发 `code-evaluator-agent`，无编排 skill（调用细节内联在 workflow 文档中）
 - `reviewing` 拆分为 **incremental**（local-stages，增量检视）和 **full**（global-stages，全量/E2E 检视）两个子类，分别注入 workflow.yaml 的不同 stage
+- **自定义 stage**（如 codecheck）：用户可在生成后手动编辑 `workflow.yaml` 的 local-stages 插入自定义 stage，指定 skill 或 agent + on_failure。脚本（workflow-todo-write.js / state-guard.py）从 yaml 动态读取，无需修改脚本。meta skill 生成时不自动扫描自定义 stage——它们是用户运行时扩展点
 
 ### Step 5: 展示方案给用户审阅
 
@@ -151,7 +152,7 @@ description: >-
 |--------------|--------------|--------|-------------|------|
 | coding | {coding_skills} | executor agent（烘焙） | local-stages: code | executor 纯编码，不编排 |
 | incremental review | {incremental_reviewing_skill} | 主 Agent 加载编排 | local-stages: review | 主 Agent 拉起 code-review-agent（增量检视） |
-| evaluating（plan 级） | harness-code-evaluator | 主 Agent 加载编排 | local-stages: evaluate | 由本流程生成 |
+| evaluating（plan 级） | code-evaluator-agent | 主 Agent 直接派发 | local-stages: evaluate | 无编排 skill，调用细节内联 workflow 文档 |
 | full review | {full_reviewing_skill} | 主 Agent 加载编排 | global-stages: full_review | 全量/E2E 检视 |
 | fixing | {fixing_skill} | 主 Agent 加载 | optional-stages: fix | 主 Agent 拉起 executor(mode=fix) + fix-self-check |
 
@@ -160,19 +161,24 @@ description: >-
 ```yaml
 local-stages:
   - name: code
-    skill: {coding_skill}
+    agent: code-executor-agent
+  # 自定义 stage 示例（用户可按需添加，脚本动态支持）
+  # - name: codecheck
+  #   skill: {custom_codecheck_skill}
+  #   on_failure: fix
   - name: review
     skill: {incremental_reviewing_skill}
     on_failure: fix
   - name: evaluate
-    skill: harness-code-evaluator
+    agent: code-evaluator-agent
     on_failure: fix
 global-stages:
-  - name: full_review
+  - name: review
     skill: {full_reviewing_skill}
     on_failure: fix
 optional-stages:
   fix:
+    agent: code-executor-agent
     skill: {fixing_skill}
 ```
 
@@ -183,7 +189,8 @@ optional-stages:
 | `.opencode/skills/harness-dev/{skill_name}/SKILL.md` | 职责+全自动化约束+输入+预检+模式判定+@引用+禁止事项 |
 | `.opencode/agents/code-executor-agent.md` | 编码执行 Agent（多 Plan 编码/修复用，`mode: subagent`，烘焙 coding_skills） |
 | `.opencode/agents/code-evaluator-agent.md` | 评估 agent 定义（`{target_lang}` 环境配置，只读） |
-| `.opencode/skills/harness-dev/harness-code-evaluator/SKILL.md` | 评估编排 skill（≤5 次重试逻辑） |
+| `.opencode/harness/workflow.yaml` | 工作流定义（stage 顺序 + on_failure，状态转移规则单一权威） |
+| `.opencode/harness/config.toml` | Harness 配置（max_rounds 等统一参数） |
 | `.opencode/plugins/loop-governance.ts` | state 守卫 hook（项目级唯一，已存在则覆盖） |
 
 > **executor vs evaluator Agent**：executor 拥有完整读写权限（`permission.edit: allow`），用于编码/修复；evaluator 只读（`permission.edit: deny`），用于评估。参见 `references/agent-templates/code-executor-agent.md`。
@@ -195,9 +202,9 @@ optional-stages:
 
 按 `references/skill-templates/workflow/` 目录下的模板文件生成 workflow Skill：
 
-#### 6.0 实例化 workflow.yaml
+#### 6.0 实例化 workflow.yaml + config.toml
 
-读 `references/skill-templates/workflow/workflow.yaml.example` 模板，用 Step 4 扫描结果替换占位符：
+**workflow.yaml**：读 `references/skill-templates/workflow/workflow.yaml.example` 模板，用 Step 4 扫描结果替换占位符：
 - `{module_name}` → Step 2 推断的 module 名
 - `{coding_skill}` → Step 4.1 coding 阶段 skill 名
 - `{incremental_reviewing_skill}` → Step 4.1 incremental_reviewing 子类 skill 名
@@ -205,6 +212,10 @@ optional-stages:
 - `{fixing_skill}` → Step 4.1 fixing 阶段 skill 名（为空则 optional-stages fix 项 skill 留空）
 
 写入 `.opencode/harness/workflow.yaml`（若已存在则覆盖）。**此文件是状态转移规则的单一权威来源，后续脚本和文档均依赖它。**
+
+**config.toml**：读 `references/skill-templates/workflow/config.toml.example` 模板，直接复制（无需占位符替换，max_rounds 统一默认 3）。
+
+写入 `.opencode/harness/config.toml`（若已存在则覆盖）。**此文件是修复循环轮次等统一参数的配置来源，主 Agent 和脚本均读取。**
 
 #### 6.1 生成 workflow Skill 文件
 
@@ -258,7 +269,7 @@ optional-stages:
 | `{full_reviewing_skill}` | Step 4.1 full_reviewing 子类 | 取首个匹配的 skill 名 |
 | `{fixing_skill}` | Step 4.1 fixing 阶段 Skill 列表 | 取首个匹配的 skill 名，为空则 yaml 中 fix 项 skill 留空 |
 
-### Step 7: 生成编码执行 Agent + 评估 Agent + 编排 Skill
+### Step 7: 生成编码执行 Agent + 评估 Agent
 
 #### 7.0: Code Executor Agent 定义（编码/修复执行用）
 
@@ -303,17 +314,6 @@ optional-stages:
 
 **覆盖策略**：若 `.opencode/agents/code-evaluator-agent.md` 已存在，直接覆盖写入（保持模板与生成产物始终一致）。
 
-#### 7.2: 评估编排 Skill
-
-用 `references/skill-templates/harness-code-evaluator/SKILL.md` 模板生成：
-
-| 平台 | 写入路径 |
-|------|---------|
-| OpenCode | `.opencode/skills/harness-dev/harness-code-evaluator/SKILL.md` |
-| Claude Code | `.claude/skills/harness-code-evaluator/SKILL.md` |
-
-此 Skill 教 workflow 主 Skill 如何调用 evaluator agent、如何消费报告、如何控制重试循环。
-
 ### Step 8: 生成控制层 Hook 与状态守卫脚本
 
 生成项目级唯一的流程治理 hook + 跨平台状态守卫脚本。**不为每个 workflow 生成独立 hook**（避免多 hook 同时监听 state 写入导致重复日志/双重阻断）。
@@ -346,7 +346,7 @@ optional-stages:
 
 > `state-guard.py` 用 python（与 hook 调用方式一致）；`workflow-todo-write.js` 用 node（与 GSD 脚本体系一致，node 在系统 PATH）。两个脚本都被 hook 自动调用，也支持 AI 手动调用（降级场景）。
 >
-> **eval 脚本**（`eval/eval-workflow-todo.js`）是 meta skill 自身的验证工具，验证 `workflow-todo-write.js` 的 todo 计算逻辑正确性（6 场景端到端断言）。**不部署**到 `harness/scripts/`——它属于 meta skill 开发验证，不属于 workflow 运行时。运行方式：`node .opencode/skills/harness-dev/meta-harness-loop-workflow/eval/eval-workflow-todo.js`。
+> **eval 脚本**（`eval/eval-workflow-todo.js`）是 meta skill 自身的验证工具，验证 `workflow-todo-write.js` 的 todo 计算逻辑正确性（13 场景端到端断言，含自定义 stage codecheck 场景）。**不部署**到 `harness/scripts/`——它属于 meta skill 开发验证，不属于 workflow 运行时。运行方式：`node .opencode/skills/harness-dev/meta-harness-loop-workflow/eval/eval-workflow-todo.js`。
 
 #### 8.3: Hooks 可用性检测 + Workflow 模板适配
 
